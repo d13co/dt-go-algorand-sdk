@@ -63,6 +63,9 @@ type LogicSig struct {
 	// Accepted on transactions if consensus param LogicSigLMsig=true
 	LMsig MultisigSig `codec:"lmsig"`
 
+	// The signature of the post-quantum account that has delegated to this LogicSig, if any
+	PQsig PQSig `codec:"pqsig"`
+
 	// Args are not signed, but checked by Logic
 	Args [][]byte `codec:"arg"`
 }
@@ -85,11 +88,14 @@ func (lsig LogicSig) Blank() bool {
 	if lsig.Sig != (Signature{}) {
 		return false
 	}
+	if !lsig.PQsig.Blank() {
+		return false
+	}
 	return true
 }
 
-// SignatureCount returns whether the LogicSig has each of the three possible signature types.
-func (lsig LogicSig) SignatureCount() (hasSig, hasMsig, hasLMsig bool, count int) {
+// SignatureCount returns whether the LogicSig has each of the three possible classical signature types.
+func (lsig LogicSig) SignatureCount() (hasSig, hasMsig, hasLMsig, hasPQSig bool, count int) {
 	if hasSig = (lsig.Sig != Signature{}); hasSig {
 		count++
 	}
@@ -97,6 +103,9 @@ func (lsig LogicSig) SignatureCount() (hasSig, hasMsig, hasLMsig bool, count int
 		count++
 	}
 	if hasLMsig = !lsig.LMsig.Blank(); hasLMsig {
+		count++
+	}
+	if hasPQSig = !lsig.PQsig.Blank(); hasPQSig {
 		count++
 	}
 	return
@@ -130,4 +139,29 @@ type HeartbeatProof struct {
 	PK1Sig ed25519Signature `codec:"p1s"`
 	// PK2Sig is a signature of OneTimeSignatureSubkeyBatchID(PK2, Batch) under the master key (OneTimeSignatureVerifier).
 	PK2Sig ed25519Signature `codec:"p2s"`
+}
+
+// PQSig is a scheme-tagged transaction authorization proof. Its public key and
+// signature are wire/decode-bounded by maxPQPublicKeySize and
+// maxPQSignatureSize (the largest sizes over all schemes in pqSchemes), which
+// feed msgp allocation bounds and therefore PQSigMaxSize, SignedTxnMaxSize, and
+// the SignedTxn wire bound.
+type PQSig struct {
+	_struct struct{} `codec:",omitempty,omitemptyarray"`
+
+	Scheme    PQScheme      `codec:"sch"`
+	Salt      PQAddressSalt `codec:"slt"`
+	PublicKey []byte        `codec:"pk"`
+	Signature []byte        `codec:"sig"`
+}
+
+// Blank returns true if the PQ authorization envelope is absent.
+func (p PQSig) Blank() bool {
+	var zeroScheme PQScheme
+	var zeroSalt PQAddressSalt
+
+	return p.Scheme == zeroScheme &&
+		p.Salt == zeroSalt &&
+		len(p.PublicKey) == 0 &&
+		len(p.Signature) == 0
 }

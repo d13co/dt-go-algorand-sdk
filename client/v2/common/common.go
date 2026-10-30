@@ -19,7 +19,6 @@ var rawRequestPaths = map[string]bool{
 	"/v2/transactions":          true,
 	"/v2/teal/compile":          true,
 	"/v2/teal/disassemble":      true,
-	"/v2/teal/dryrun":           true,
 	"/v2/transactions/simulate": true,
 }
 
@@ -78,10 +77,35 @@ func MakeClientWithTransport(address string, apiHeader, apiToken string, headers
 	return
 }
 
-type BadRequest error
-type InvalidToken error
-type NotFound error
-type InternalError error
+// HTTPError is returned for non-2xx HTTP responses that do not map to a more specific type.
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %v: %s", e.StatusCode, e.Message)
+}
+
+// BadRequest is returned for HTTP 400 responses.
+type BadRequest struct {
+	HTTPError
+}
+
+// InvalidToken is returned for HTTP 401 responses.
+type InvalidToken struct {
+	HTTPError
+}
+
+// NotFound is returned for HTTP 404 responses.
+type NotFound struct {
+	HTTPError
+}
+
+// InternalError is returned for HTTP 500 responses.
+type InternalError struct {
+	HTTPError
+}
 
 // extractError checks if the response signifies an error.
 // If so, it returns the error.
@@ -91,18 +115,18 @@ func extractError(code int, errorBuf []byte) error {
 		return nil
 	}
 
-	wrappedError := fmt.Errorf("HTTP %v: %s", code, errorBuf)
+	msg := string(errorBuf)
 	switch code {
 	case 400:
-		return BadRequest(wrappedError)
+		return BadRequest{HTTPError: HTTPError{StatusCode: code, Message: msg}}
 	case 401:
-		return InvalidToken(wrappedError)
+		return InvalidToken{HTTPError: HTTPError{StatusCode: code, Message: msg}}
 	case 404:
-		return NotFound(wrappedError)
+		return NotFound{HTTPError: HTTPError{StatusCode: code, Message: msg}}
 	case 500:
-		return InternalError(wrappedError)
+		return InternalError{HTTPError: HTTPError{StatusCode: code, Message: msg}}
 	default:
-		return wrappedError
+		return HTTPError{StatusCode: code, Message: msg}
 	}
 }
 

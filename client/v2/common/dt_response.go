@@ -63,11 +63,12 @@ func (info *ResponseInfo) fill(resp *http.Response) {
 	info.Header = resp.Header.Clone()
 }
 
-// HTTPError is an error response from a time-travel method of the SDK, with
-// its status code and headers. Its message is that of the error it wraps,
-// which is what the upstream methods return ("HTTP 400: ..."). Upstream
+// ResponseError is an error response from a time-travel method of the SDK,
+// with its status code and headers. It wraps the error the client returned,
+// which is what the upstream methods return (an HTTPError, or one of the
+// types that embed it, such as BadRequest), and gives its message. Upstream
 // methods never return it; use WithResponseInfo to read their headers.
-type HTTPError struct {
+type ResponseError struct {
 	// StatusCode is the HTTP status code.
 	StatusCode int
 	// Header holds the response headers.
@@ -76,17 +77,17 @@ type HTTPError struct {
 	Cause error
 }
 
-func (e *HTTPError) Error() string { return e.Cause.Error() }
+func (e *ResponseError) Error() string { return e.Cause.Error() }
 
 // Unwrap returns the error the request returned.
-func (e *HTTPError) Unwrap() error { return e.Cause }
+func (e *ResponseError) Unwrap() error { return e.Cause }
 
-// WrapHTTPError wraps err in an HTTPError if info holds an error status. It
+// WrapResponseError wraps err in a ResponseError if info holds an error status. It
 // returns err unchanged when err is nil, when there was no response, and when
 // the response succeeded (err is then a decoding error).
-func WrapHTTPError(err error, info *ResponseInfo) error {
+func WrapResponseError(err error, info *ResponseInfo) error {
 	if err == nil || info == nil || info.StatusCode < 300 {
 		return err
 	}
-	return &HTTPError{StatusCode: info.StatusCode, Header: info.Header, Cause: err}
+	return &ResponseError{StatusCode: info.StatusCode, Header: info.Header, Cause: err}
 }

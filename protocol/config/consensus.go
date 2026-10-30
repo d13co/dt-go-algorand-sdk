@@ -562,6 +562,10 @@ type ConsensusParams struct {
 	// Heartbeat support
 	Heartbeat bool
 
+	// AllowGroupedHeartbeats lets a heartbeat share a transaction group with
+	// an application call or an asset creation.
+	AllowGroupedHeartbeats bool
+
 	// EnableSha512BlockHash adds an additional SHA-512 hash to the block header.
 	EnableSha512BlockHash bool
 
@@ -593,6 +597,30 @@ type ConsensusParams struct {
 	// EnableSelectF128 changes the sortition algorithm to use a 128-bit software
 	// floating point binomial CDF implementation for committee selection.
 	EnableSelectF128 bool
+
+	// EnablePQSchemeFalcon512 enables native Falcon-512 transaction
+	// authorization for the f5 PQ scheme.
+	EnablePQSchemeFalcon512 bool
+
+	// EnablePQSchemeEd25519 enables Ed25519 transaction authorization for the
+	// ed scheme's hashed-address profile.
+	EnablePQSchemeEd25519 bool
+
+	// RequireLogicSigArgAccess requires that a LogicSig carry no argument it did
+	// not read: nothing above the highest index it read, and nothing unread
+	// below that index unless it is empty. Args are covered by no signature, and
+	// are part of neither the transaction ID nor the group hash, so without this
+	// rule a third party can append bytes to a transaction in flight, and the
+	// program has no way to detect it.
+	RequireLogicSigArgAccess bool
+
+	// CloseRequiresBaseMinBalance allows an account to be closed only if its
+	// minimum balance requirement is exactly the base MinBalance. Before this,
+	// closing was guarded by checks of specific resource counters, which
+	// became insufficient once AppSizeUpdates allowed an account to hold MBR
+	// for global state and extra pages of apps it neither created nor opted
+	// into.
+	CloseRequiresBaseMinBalance bool
 }
 
 // ProposerPayoutRules puts several related consensus parameters in one place. The same
@@ -1394,22 +1422,51 @@ func initConsensusProtocols() {
 	// our current max is 250000
 	v40.ApprovedUpgrades[protocol.ConsensusV41] = 208000
 
+	v42 := v41
+	v42.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
+
+	v42.LogicSigVersion = 13
+	v42.AppSizeUpdates = true
+	v42.AllowZeroLocalAppRef = true
+	v42.EnforceAuthAddrSenderDiff = true
+	v42.EnablePQSchemeFalcon1024 = true
+	v42.LoadTracking = true
+	v42.MaxAbsoluteTxnNoteBytes = 4096   // same as largest AVM value
+	v42.MaxAbsoluteExtraProgramPages = 7 // Allow larger programs with extra fees
+	v42.MaxAbsoluteTotalArgLen = 16384   // We _could_ make this as high as 16*4k
+	v42.PerByteTxnSurcharge = 100        // Each charged byte adds 0.000100 of min fee
+	v42.EnableSelectF128 = true
+
+	Consensus[protocol.ConsensusV42] = v42
+
+	// v41 can be upgraded to v42, with an update delay of 7d:
+	// 208000 = (7 * 24 * 60 * 60 / 2.9 ballpark round times)
+	// our current max is 250000
+	v41.ApprovedUpgrades[protocol.ConsensusV42] = 208000
+
+	// v43 is a fix-only release, so it keeps v42's LogicSigVersion.
+	v43 := v42
+	v43.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
+
+	v43.CloseRequiresBaseMinBalance = true
+
+	Consensus[protocol.ConsensusV43] = v43
+
+	// v42 can be upgraded to v43, with an update delay of 7d:
+	// 208000 = (7 * 24 * 60 * 60 / 2.9 ballpark round times)
+	// our current max is 250000
+	v42.ApprovedUpgrades[protocol.ConsensusV43] = 208000
+
 	// ConsensusFuture is used to test features that are implemented
 	// but not yet released in a production protocol version.
-	vFuture := v41
+	vFuture := v43
 	vFuture.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
 
-	vFuture.LogicSigVersion = 13 // When moving this to a release, put a new higher LogicSigVersion here
-	vFuture.AppSizeUpdates = true
-	vFuture.AllowZeroLocalAppRef = true
-	vFuture.EnforceAuthAddrSenderDiff = true
-	vFuture.EnablePQSchemeFalcon1024 = true
-	vFuture.LoadTracking = true
-	vFuture.MaxAbsoluteTxnNoteBytes = 4096   // same as largest AVM value
-	vFuture.MaxAbsoluteExtraProgramPages = 7 // Allow larger programs with extra fees
-	vFuture.MaxAbsoluteTotalArgLen = 16384   // We _could_ make this as high as 16*4k
-	vFuture.PerByteTxnSurcharge = 100        // Each charged byte adds 0.000100 of min fee
-	vFuture.EnableSelectF128 = true
+	vFuture.LogicSigVersion = 14 // When moving this to a release, put a new higher LogicSigVersion here
+	vFuture.EnablePQSchemeFalcon512 = true
+	vFuture.EnablePQSchemeEd25519 = true
+	vFuture.RequireLogicSigArgAccess = true
+	vFuture.AllowGroupedHeartbeats = true
 
 	Consensus[protocol.ConsensusFuture] = vFuture
 
@@ -1447,8 +1504,7 @@ func initConsensusProtocols() {
 	// vFnetX are like vAlphaX but for AF's FNet. These are the genesis and
 	// historical protocols for the FNet network; a mainline node needs them to
 	// open the FNet genesis ledger (proto fnet1) and to replay the pre-V40 chain.
-	// The on-chain upgrade path was fnet1->fnet2->fnet3->fnet4->V40, and continues
-	// V41->fnet5.
+	// The on-chain upgrade path was fnet1->fnet2->fnet3->fnet4->V40.
 	vFnet1 := v39
 	vFnet1.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
 	vFnet1.LogicSigVersion = 11 // When moving this to a release, put a new higher LogicSigVersion here
@@ -1486,10 +1542,7 @@ func initConsensusProtocols() {
 
 	vFnet4.ApprovedUpgrades[protocol.ConsensusV40] = 10000
 
-	// vFnet5 is the protocol AF's FNet runs. It extends v41 with the parameter
-	// changes go-algorand released as ConsensusV42, restated here rather than
-	// derived from v42, so that fnet5 stays pinned to the values FNet runs with
-	// even if v42 is later amended.
+	// vFnet5 was the v42 preview on FNet
 	vFnet5 := v41
 	vFnet5.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
 
@@ -1506,10 +1559,6 @@ func initConsensusProtocols() {
 	vFnet5.EnableSelectF128 = true
 
 	Consensus[protocol.ConsensusVFnet5] = vFnet5
-
-	// v41 can be upgraded to fnet5. As with the other FNet protocols the delay is
-	// MinUpgradeWaitRounds.
-	v41.ApprovedUpgrades[protocol.ConsensusVFnet5] = 10000
 }
 
 // Global defines global Algorand protocol parameters which should not be overridden.

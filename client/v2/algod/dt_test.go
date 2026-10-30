@@ -473,16 +473,16 @@ func TestErrorHelpers(t *testing.T) {
 	_, ok = RetryAfter(err)
 	assert.False(t, ok)
 
-	httpErr := &common.HTTPError{StatusCode: 503, Header: http.Header{"Retry-After": {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)}}, Cause: errors.New("HTTP 503: x")}
+	httpErr := &common.ResponseError{StatusCode: 503, Header: http.Header{"Retry-After": {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)}}, Cause: upstreamErr(503, "x")}
 	wait, ok = RetryAfter(httpErr)
 	assert.True(t, ok)
 	assert.Equal(t, time.Duration(0), wait)
 
-	assert.True(t, IsTimeLimitExceeded(errors.New("HTTP 504: the request reached the node's time limit")))
-	assert.True(t, IsRoundTooLarge(errors.New(`HTTP 400: {"message":"too many objects to merge"}`)))
-	assert.True(t, IsQueryResponseTooLarge(errors.New(`HTTP 400: {"message":"query response too large"}`)))
-	assert.True(t, IsOnlineStakeNotRecorded(errors.New(`HTTP 404: {"message":"the time travel history does not record this online stake"}`)))
-	assert.True(t, IsHistoryUnavailable(errors.New(`HTTP 503: {"message":"the time travel history is not served"}`)))
+	assert.True(t, IsTimeLimitExceeded(upstreamErr(504, "the request reached the node's time limit")))
+	assert.True(t, IsRoundTooLarge(upstreamErr(400, `{"message":"too many objects to merge"}`)))
+	assert.True(t, IsQueryResponseTooLarge(upstreamErr(400, `{"message":"query response too large"}`)))
+	assert.True(t, IsOnlineStakeNotRecorded(upstreamErr(404, `{"message":"the time travel history does not record this online stake"}`)))
+	assert.True(t, IsHistoryUnavailable(upstreamErr(503, `{"message":"the time travel history is not served"}`)))
 	assert.False(t, IsNodeBusy(errors.New("dial tcp: connection refused")))
 	_, ok = StatusCode(errors.New("dial tcp: connection refused"))
 	assert.False(t, ok)
@@ -513,8 +513,8 @@ func TestReviewGaps(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("round too large and history messages", func(t *testing.T) {
-		assert.True(t, IsRoundTooLarge(errors.New(`HTTP 400: {"message":"one round of boxes is too large: app 5 has more than 10000 boxes at round 9: use GET /v2/applications/5/boxes?round="}`)))
-		assert.True(t, IsHistoryUnavailable(errors.New(`HTTP 503: {"message":"timetravel: the box index is incomplete"}`)))
+		assert.True(t, IsRoundTooLarge(upstreamErr(400, `{"message":"one round of boxes is too large: app 5 has more than 10000 boxes at round 9: use GET /v2/applications/5/boxes?round="}`)))
+		assert.True(t, IsHistoryUnavailable(upstreamErr(503, `{"message":"timetravel: the box index is incomplete"}`)))
 	})
 
 	t.Run("a fork without time travel", func(t *testing.T) {
@@ -606,5 +606,29 @@ func TestSupportsAssetHolders(t *testing.T) {
 }
 
 func TestDeltasBusy(t *testing.T) {
-	assert.True(t, IsNodeBusy(errors.New(`HTTP 503: {"message":"every slot for re-evaluating old rounds is in use"}`)))
+	assert.True(t, IsNodeBusy(upstreamErr(503, `{"message":"every slot for re-evaluating old rounds is in use"}`)))
+}
+
+// upstreamErr returns the error the client returns for an error response.
+func upstreamErr(code int, body string) error {
+	e := common.HTTPError{StatusCode: code, Message: body}
+	switch code {
+	case 400:
+		return common.BadRequest{HTTPError: e}
+	case 401:
+		return common.InvalidToken{HTTPError: e}
+	case 404:
+		return common.NotFound{HTTPError: e}
+	case 500:
+		return common.InternalError{HTTPError: e}
+	}
+	return e
+}
+
+func TestStatusCodeOfUpstreamErrors(t *testing.T) {
+	for _, code := range []int{400, 401, 404, 418, 500, 503} {
+		got, ok := StatusCode(fmt.Errorf("wrapped: %w", upstreamErr(code, "x")))
+		assert.True(t, ok, code)
+		assert.Equal(t, code, got)
+	}
 }

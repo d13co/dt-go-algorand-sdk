@@ -59,35 +59,43 @@ func unsupported(op, reason string, cause error) *DTUnsupportedError {
 
 // dtCall runs a request with a context that captures the response's status
 // and headers, reusing the caller's ResponseInfo if it passed one, and wraps
-// an error response in a common.HTTPError.
+// an error response in a common.ResponseError.
 func dtCall(ctx context.Context, request func(ctx context.Context) error) error {
 	info := common.ResponseInfoFrom(ctx)
 	if info == nil {
 		info = &common.ResponseInfo{}
 		ctx = common.WithResponseInfo(ctx, info)
 	}
-	return common.WrapHTTPError(request(ctx), info)
+	return common.WrapResponseError(request(ctx), info)
 }
 
-// The upstream client formats error responses as "HTTP <code>: <body>".
-var statusPrefix = regexp.MustCompile(`^HTTP (\d{3}): `)
-
-// StatusCode returns the HTTP status of an algod error response, from a
-// common.HTTPError or from the "HTTP <code>: " message the client gives every
-// error response. It returns false for other errors, such as network ones.
+// StatusCode returns the HTTP status of an algod error response: a
+// common.ResponseError, or the common.HTTPError (or BadRequest, InvalidToken,
+// NotFound, InternalError) the client returns for every error response. It
+// returns false for other errors, such as network ones.
 func StatusCode(err error) (int, bool) {
-	if err == nil {
-		return 0, false
+	var respErr *common.ResponseError
+	if errors.As(err, &respErr) {
+		return respErr.StatusCode, true
 	}
-	var httpErr *common.HTTPError
-	if errors.As(err, &httpErr) {
-		return httpErr.StatusCode, true
-	}
-	for e := err; e != nil; e = errors.Unwrap(e) {
-		if m := statusPrefix.FindStringSubmatch(e.Error()); m != nil {
-			code, _ := strconv.Atoi(m[1])
-			return code, true
-		}
+	var (
+		plain    common.HTTPError
+		bad      common.BadRequest
+		token    common.InvalidToken
+		notFound common.NotFound
+		internal common.InternalError
+	)
+	switch {
+	case errors.As(err, &plain):
+		return plain.StatusCode, true
+	case errors.As(err, &bad):
+		return bad.StatusCode, true
+	case errors.As(err, &token):
+		return token.StatusCode, true
+	case errors.As(err, &notFound):
+		return notFound.StatusCode, true
+	case errors.As(err, &internal):
+		return internal.StatusCode, true
 	}
 	return 0, false
 }
@@ -171,10 +179,10 @@ func IsOnlineStakeNotRecorded(err error) bool {
 
 // RetryAfter returns how long an error response's Retry-After header says to
 // wait, given in seconds or as an HTTP date (0 if already past). It needs the
-// headers: errors of the time-travel methods carry them (common.HTTPError);
+// headers: errors of the time-travel methods carry them (common.ResponseError);
 // for upstream methods it returns false.
 func RetryAfter(err error) (time.Duration, bool) {
-	var httpErr *common.HTTPError
+	var httpErr *common.ResponseError
 	if !errors.As(err, &httpErr) || httpErr.Header == nil {
 		return 0, false
 	}

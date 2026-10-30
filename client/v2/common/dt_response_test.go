@@ -56,15 +56,15 @@ func TestResponseInfo(t *testing.T) {
 	assert.Equal(t, ResponseInfo{}, info)
 }
 
-func TestWrapHTTPError(t *testing.T) {
+func TestWrapResponseError(t *testing.T) {
 	cause := errors.New("HTTP 503: busy")
-	assert.Nil(t, WrapHTTPError(nil, &ResponseInfo{StatusCode: 503}))
-	assert.Equal(t, cause, WrapHTTPError(cause, nil))
-	assert.Equal(t, cause, WrapHTTPError(cause, &ResponseInfo{}), "no response")
-	assert.Equal(t, cause, WrapHTTPError(cause, &ResponseInfo{StatusCode: 200}), "decode error")
+	assert.Nil(t, WrapResponseError(nil, &ResponseInfo{StatusCode: 503}))
+	assert.Equal(t, cause, WrapResponseError(cause, nil))
+	assert.Equal(t, cause, WrapResponseError(cause, &ResponseInfo{}), "no response")
+	assert.Equal(t, cause, WrapResponseError(cause, &ResponseInfo{StatusCode: 200}), "decode error")
 
-	wrapped := WrapHTTPError(cause, &ResponseInfo{StatusCode: 503, Header: http.Header{"Retry-After": {"1"}}})
-	var httpErr *HTTPError
+	wrapped := WrapResponseError(cause, &ResponseInfo{StatusCode: 503, Header: http.Header{"Retry-After": {"1"}}})
+	var httpErr *ResponseError
 	require.ErrorAs(t, wrapped, &httpErr)
 	assert.Equal(t, 503, httpErr.StatusCode)
 	assert.Equal(t, cause.Error(), wrapped.Error())
