@@ -13,6 +13,8 @@ concurrency:
 jobs:
   test:
     name: Run Test Suites
+    # go-dtalgorand-sdk: upstream's workflow; the fork has its own (dtsdk.yml).
+    if: github.repository == 'algorand/go-algorand-sdk'
     runs-on: ubuntu-24.04
     
     steps:

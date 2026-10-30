@@ -3,6 +3,8 @@ on:
   pull_request:
 jobs:
   lint:
+    # go-dtalgorand-sdk: upstream's workflow; the fork has its own (dtsdk.yml).
+    if: github.repository == 'algorand/go-algorand-sdk'
     runs-on: ubuntu-latest
     steps:
       - name: Check out code into the Go module directory

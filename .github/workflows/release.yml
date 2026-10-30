@@ -14,6 +14,8 @@ on:
 
 jobs:
   release_and_publish:
+    # go-dtalgorand-sdk: upstream's workflow; the fork has its own (dtsdk.yml).
+    if: github.repository == 'algorand/go-algorand-sdk'
     runs-on: ubuntu-24.04
     permissions:
       contents: write # Needed for creating releases and tags, and deleting branches

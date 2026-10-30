@@ -6,6 +6,8 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 jobs:
   check_label:
+    # go-dtalgorand-sdk: upstream's workflow; the fork has its own (dtsdk.yml).
+    if: github.repository == 'algorand/go-algorand-sdk'
     runs-on: ubuntu-latest
     name: Check PR Category and Type
     steps:
