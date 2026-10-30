@@ -48,8 +48,17 @@ func reply(w http.ResponseWriter, status int, body string) {
 	_, _ = io.WriteString(w, body)
 }
 
+// markRound marks the answer with the request's round, if it has one, as a
+// time-travel node does.
+func markRound(w http.ResponseWriter, r *http.Request) {
+	if round := r.URL.Query().Get("round"); round != "" {
+		w.Header().Set(TTRoundHeader, round)
+	}
+}
+
 // echoRound answers every read with the round it was asked for.
 func echoRound(w http.ResponseWriter, r *http.Request) {
+	markRound(w, r)
 	round := r.URL.Query().Get("round")
 	reply(w, 200, fmt.Sprintf(`{"round":%s,"current_round":%s}`, round, round))
 }
@@ -110,16 +119,134 @@ func TestRoundSetBeforeOrAfterSetters(t *testing.T) {
 	assert.Equal(t, "exclude=all&round=5", s.requests[0].URL.RawQuery)
 }
 
-func TestRoundReadsDontCheckTheRound(t *testing.T) {
-	// Stock algod ignores round: the SDK doesn't detect it (DTFeatures does).
-	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, `{"round":99,"current_round":99}`)
-	})
-	acct, err := c.AccountInformation("A").Round(5).Do(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, uint64(99), acct.Round)
-	assert.Len(t, s.requests, 1)
+func TestParseTTRound(t *testing.T) {
+	h := http.Header{}
+	_, ok := ParseTTRound(h)
+	assert.False(t, ok)
+	for value, want := range map[string]uint64{"0": 0, "45000000": 45000000, "18446744073709551615": 1<<64 - 1} {
+		h.Set(TTRoundHeader, value)
+		got, ok := ParseTTRound(h)
+		assert.True(t, ok, value)
+		assert.Equal(t, want, got, value)
+	}
+	for _, value := range []string{"-1", " 5", "5,6", "0x5", "18446744073709551616", "abc"} {
+		h.Set(TTRoundHeader, value)
+		_, ok := ParseTTRound(h)
+		assert.False(t, ok, value)
+	}
 }
+
+func TestTTRoundHeader(t *testing.T) {
+	ctx := context.Background()
+	type answer struct {
+		status int
+		header string // X-Algod-TT-Round, if not empty
+		body   string
+	}
+	stubFor := func(a answer) *Client {
+		c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+			if a.header != "" {
+				w.Header().Set(TTRoundHeader, a.header)
+			}
+			reply(w, a.status, a.body)
+		})
+		return c
+	}
+	account := func(c *Client) error { _, err := c.AccountInformation("A").Round(5).Do(ctx); return err }
+	asset := func(c *Client) error { _, err := c.GetAssetByID(1).Round(5).Do(ctx); return err }
+	boxes := func(c *Client) error { _, err := c.GetApplicationBoxesAt(1, 5).Do(ctx); return err }
+	holders := func(c *Client) error { _, err := c.GetAssetHolders(1).Round(5).Do(ctx); return err }
+
+	const (
+		accepted    = "accepted"
+		unsupported = "unsupported"
+		nodeBug     = "node bug"
+		passed      = "passed through"
+	)
+	cases := []struct {
+		name   string
+		read   func(*Client) error
+		answer answer
+		want   string
+		status int // of a passed-through or unsupported error
+	}{
+		{"account marked", account, answer{200, "5", `{"round":99}`}, accepted, 0},
+		{"asset marked", asset, answer{200, "5", `{"index":1}`}, accepted, 0},
+		{"account unmarked", account, answer{200, "", `{"round":5}`}, unsupported, 0},
+		{"asset unmarked", asset, answer{200, "", `{"index":1}`}, unsupported, 0},
+		{"account marked with another round", account, answer{200, "6", `{"round":5}`}, nodeBug, 0},
+		{"account marked with garbage", account, answer{200, "five", `{"round":5}`}, nodeBug, 0},
+		{"404 marked", asset, answer{404, "5", `{"message":"asset does not exist"}`}, passed, 404},
+		{"404 unmarked", asset, answer{404, "", `{"message":"asset does not exist"}`}, unsupported, 404},
+		{"404 marked with another round", asset, answer{404, "4", `{"message":"asset does not exist"}`}, nodeBug, 0},
+		{"500 marked", account, answer{500, "5", `{"message":"boom"}`}, passed, 500},
+		{"500 unmarked", account, answer{500, "", `{"message":"boom"}`}, passed, 500},
+		{"400 unmarked", account, answer{400, "", `{"message":"round greater than the latest"}`}, passed, 400},
+		{"boxes marked", boxes, answer{200, "5", `{"round":5,"boxes":[]}`}, accepted, 0},
+		{"boxes unmarked at the round", boxes, answer{200, "", `{"round":5,"boxes":[]}`}, accepted, 0},
+		{"boxes unmarked at another round", boxes, answer{200, "", `{"round":9,"boxes":[]}`}, unsupported, 0},
+		{"boxes 404 unmarked", boxes, answer{404, "", `{"message":"not found"}`}, passed, 404},
+		{"holders marked", holders, answer{200, "5", `{"round":5,"holders":[]}`}, accepted, 0},
+		{"holders unmarked", holders, answer{200, "", `{"round":5,"holders":[]}`}, unsupported, 0},
+		{"holders 404 marked", holders, answer{404, "5", `{"message":"asset does not exist"}`}, passed, 404},
+		{"holders 404 unmarked", holders, answer{404, "", `{"message":"asset does not exist"}`}, unsupported, 404},
+		{"holders 500 marked", holders, answer{500, "5", `{"message":"boom"}`}, passed, 500},
+		{"holders 503 unmarked", holders, answer{503, "", `{"message":"timetravel: the asset holders index is not complete"}`}, passed, 503},
+	}
+	for _, tc := range cases {
+		err := tc.read(stubFor(tc.answer))
+		switch tc.want {
+		case accepted:
+			assert.NoError(t, err, tc.name)
+			continue
+		case unsupported:
+			var dtErr *DTUnsupportedError
+			if assert.ErrorAs(t, err, &dtErr, tc.name) {
+				if assert.NotNil(t, dtErr.RequestedRound, tc.name) {
+					assert.Equal(t, uint64(5), *dtErr.RequestedRound, tc.name)
+				}
+			}
+		case nodeBug:
+			assert.Error(t, err, tc.name)
+			assert.NotErrorIs(t, err, ErrDTUnsupported, tc.name)
+			_, isHTTP := StatusCode(err)
+			assert.False(t, isHTTP, "%s: a plain error", tc.name)
+			assert.Contains(t, err.Error(), "asked for round 5", tc.name)
+		case passed:
+			assert.Error(t, err, tc.name)
+			assert.NotErrorIs(t, err, ErrDTUnsupported, tc.name)
+		}
+		if tc.status != 0 {
+			code, ok := StatusCode(err)
+			assert.True(t, ok, tc.name)
+			assert.Equal(t, tc.status, code, tc.name)
+		}
+	}
+
+	t.Run("no round, no check", func(t *testing.T) {
+		c := stubFor(answer{200, "", `{"round":5,"holders":[]}`})
+		_, err := c.GetAssetHolders(1).Do(ctx)
+		assert.NoError(t, err)
+	})
+
+	t.Run("the caller's ResponseInfo is filled", func(t *testing.T) {
+		c := stubFor(answer{200, "5", `{"round":5}`})
+		var info common.ResponseInfo
+		_, err := c.AccountInformation("A").Round(5).Do(common.WithResponseInfo(ctx, &info))
+		require.NoError(t, err)
+		round, ok := ParseTTRound(info.Header)
+		assert.True(t, ok)
+		assert.Equal(t, uint64(5), round)
+	})
+
+	t.Run("supply without online stake at the round", func(t *testing.T) {
+		c := stubFor(answer{404, "5", `{"message":"the node's history does not record this online stake"}`})
+		_, err := c.Supply().Round(5).Do(ctx)
+		assert.True(t, IsOnlineStakeNotRecorded(err))
+		assert.NotErrorIs(t, err, ErrDTUnsupported)
+	})
+}
+
 func TestPastRoundRefused(t *testing.T) {
 	for _, msg := range []string{
 		"looking up past rounds requires EnableTimeTravel",
@@ -135,6 +262,7 @@ func TestPastRoundRefused(t *testing.T) {
 
 func TestRound404IsTheNodesAnswer(t *testing.T) {
 	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		markRound(w, r)
 		reply(w, 404, `{"message":"account asset info not found"}`)
 	})
 	var info common.ResponseInfo
@@ -288,6 +416,7 @@ func TestVersionsPages(t *testing.T) {
 
 func TestAssetHolders(t *testing.T) {
 	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		markRound(w, r)
 		if r.URL.Query().Get("next") == "" {
 			reply(w, 200, `{"round":100,"next-token":"B","holders":[{"address":"A","amount":1,"is-frozen":false}]}`)
 			return
@@ -529,6 +658,7 @@ func TestReviewGaps(t *testing.T) {
 
 	t.Run("holders token loop and early stop", func(t *testing.T) {
 		c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+			markRound(w, r)
 			reply(w, 200, `{"round":3,"next-token":"B","holders":[{"address":"A","amount":1,"is-frozen":false}]}`)
 		})
 		var lastErr error

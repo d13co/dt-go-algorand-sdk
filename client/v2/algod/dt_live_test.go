@@ -17,6 +17,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,9 +100,13 @@ func TestLiveTimeTravel(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, uint64(livePast), supply.Current_round)
 
-		asset, err := c.GetAssetByID(liveUSDC).Round(livePast).Do(ctx)
+		var info common.ResponseInfo
+		asset, err := c.GetAssetByID(liveUSDC).Round(livePast).Do(common.WithResponseInfo(ctx, &info))
 		require.NoError(t, err)
 		assert.Equal(t, uint64(liveUSDC), asset.Index)
+		ttRound, ok := ParseTTRound(info.Header)
+		assert.True(t, ok, "the node marks the answer")
+		assert.Equal(t, uint64(livePast), ttRound)
 
 		_, err = c.GetAssetByID(liveUSDC).Round(1000).Do(ctx)
 		code, _ := StatusCode(err)
@@ -247,7 +252,7 @@ func TestLiveStockAlgod(t *testing.T) {
 
 	f, err := c.DTFeatures(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, DTFeatures{}, f, "DTFeatures is the gate: reads at a round are not checked")
+	assert.Equal(t, DTFeatures{}, f)
 	ok, err := c.SupportsAssetHolders(ctx)
 	require.NoError(t, err)
 	assert.False(t, ok)
@@ -266,4 +271,12 @@ func TestLiveStockAlgod(t *testing.T) {
 	assert.Equal(t, 400, code)
 	_, err = c.Query(models.QueryRequest{AppId: liveXGov, Calls: []models.QueryCall{{}}}).Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported)
+
+	// Stock algod ignores round, and doesn't mark its answers with it.
+	status, err := c.Status().Do(ctx)
+	require.NoError(t, err)
+	_, err = c.Supply().Round(status.LastRound).Do(ctx)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "a 200 without X-Algod-TT-Round")
+	_, err = c.GetAssetByID(1 << 62).Round(status.LastRound).Do(ctx)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "a 404 without X-Algod-TT-Round")
 }

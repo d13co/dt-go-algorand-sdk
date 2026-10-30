@@ -2,15 +2,18 @@ package algod
 
 // This file is part of go-dtalgorand-sdk: reads at a past round. Round(r) on
 // an upstream request returns a request of the same name with "At" appended,
-// which sends round=r. On a node that may be stock algod, which ignores round
-// and answers for its latest round, check DTFeatures first. An At request
-// shares the upstream request's parameters: its setters change them, so don't
-// set them on one base request from several goroutines.
+// which sends round=r. The node marks every answer it gives as of round r
+// with the X-Algod-TT-Round header, and the SDK requires it: stock algod
+// ignores round and answers for its latest round, without the header. An At
+// request shares the upstream request's parameters: its setters change them,
+// so don't set them on one base request from several goroutines.
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
@@ -18,21 +21,91 @@ import (
 	"github.com/google/go-querystring/query"
 )
 
-// doAt performs a read at round, turning a node's refusal of past rounds
-// ("requires EnableTimeTravel", "given round is no longer available") into a
-// *DTUnsupportedError. It doesn't check the response's round: stock algod
-// ignores round and answers for its latest round, so check DTFeatures first
-// when the node may be stock algod.
-func doAt[T any](ctx context.Context, c *Client, op, path string, params interface{}, round uint64, headers []*common.Header) (response T, err error) {
-	err = dtCall(ctx, func(ctx context.Context) error {
+// TTRoundHeader is the response header in which a time-travel node marks an
+// answer given as of the round the request asked for (round=R): the 200, and
+// any error after the node accepted the round, a 404 included. Its value is R.
+// The node doesn't send it without round, nor on the answers that refuse the
+// round. Reads at a round check it; read it on other requests with
+// common.WithResponseInfo and ParseTTRound.
+const TTRoundHeader = "X-Algod-TT-Round"
+
+var ttRoundValue = regexp.MustCompile(`^\d{1,20}$`)
+
+// ParseTTRound parses the X-Algod-TT-Round header of a response. It returns
+// false when the header is absent or not a round.
+func ParseTTRound(header http.Header) (uint64, bool) {
+	value := header.Get(TTRoundHeader)
+	if !ttRoundValue.MatchString(value) {
+		return 0, false
+	}
+	round, err := strconv.ParseUint(value, 10, 64)
+	return round, err == nil
+}
+
+// checkTTRound checks the answer to a request at round (err is its error, or
+// nil) by its X-Algod-TT-Round header:
+//   - the header holds round: the answer stands;
+//   - the header holds anything else: a plain error, as the node is broken;
+//   - no header on a 2xx or a 404: a *DTUnsupportedError, as the node ignored
+//     round (stock algod) or predates the header;
+//   - no header on another error: err, unchanged (malformed requests and
+//     refusals of the round carry no header).
+//
+// bodyRound is for the boxes listing, which stock algod answers at recent
+// rounds without the header: when not nil, a 2xx without the header is
+// checked by the round bodyRound reports, and a 404 without it is err.
+func checkTTRound(op string, round uint64, info *common.ResponseInfo, err error, bodyRound func() uint64) error {
+	if info == nil || info.StatusCode == 0 {
+		return err // no response
+	}
+	if value := info.Header.Get(TTRoundHeader); value != "" {
+		got, ok := ParseTTRound(info.Header)
+		switch {
+		case !ok:
+			return fmt.Errorf("%s: asked for round %d, the node answered with an invalid %s header %q", op, round, TTRoundHeader, value)
+		case got != round:
+			return fmt.Errorf("%s: asked for round %d, the node marked its answer as round %d", op, round, got)
+		}
+		return err
+	}
+	success := info.StatusCode < 300
+	switch {
+	case success && err != nil:
+		return err // the body could not be decoded
+	case success && bodyRound != nil:
+		if got := bodyRound(); got != round {
+			e := unsupported(op, fmt.Sprintf("the node answered for round %d", got), nil)
+			e.RequestedRound = &round
+			return e
+		}
+		return nil
+	case success || (info.StatusCode == http.StatusNotFound && bodyRound == nil):
+		e := unsupported(op, "the node did not mark its answer with the round ("+TTRoundHeader+"), so it ignored round, as stock algod does", err)
+		e.RequestedRound = &round
+		return e
+	}
+	return err
+}
+
+// doAt performs a read at round, checks the answer's X-Algod-TT-Round header
+// (checkTTRound; roundOf is its bodyRound, nil but for the boxes listing),
+// and turns a node's refusal of past rounds ("requires EnableTimeTravel",
+// "given round is no longer available") into a *DTUnsupportedError.
+func doAt[T any](ctx context.Context, c *Client, op, path string, params interface{}, round uint64, headers []*common.Header, roundOf func(*T) uint64) (response T, err error) {
+	info, err := dtCallInfo(ctx, func(ctx context.Context) error {
 		return c.get(ctx, &response, path, params, headers)
 	})
-	if err != nil && isPastRoundUnsupported(err) {
+	// Refusals of the round are never marked.
+	if err != nil && info.Header.Get(TTRoundHeader) == "" && isPastRoundUnsupported(err) {
 		e := unsupported(op, fmt.Sprintf("the node can't read round %d (EnableTimeTravel)", round), err)
 		e.RequestedRound = &round
 		return response, e
 	}
-	return response, err
+	var bodyRound func() uint64
+	if roundOf != nil {
+		bodyRound = func() uint64 { return roundOf(&response) }
+	}
+	return response, checkTTRound(op, round, info, err, bodyRound)
 }
 
 // withRound returns query parameters made of params (a struct, or nil) and
@@ -92,7 +165,7 @@ func (a *AccountInformationAt) Exclude(Exclude []string) *AccountInformationAt {
 func (a *AccountInformationAt) Do(ctx context.Context, headers ...*common.Header) (models.Account, error) {
 	return doAt[models.Account](ctx, a.s.c, "GET /v2/accounts/{address}",
 		fmt.Sprintf("/v2/accounts/%s", common.EscapeParams(a.s.address)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // AccountAssetInformationAt is AccountAssetInformation at a past round.
@@ -117,7 +190,7 @@ func (a *AccountAssetInformationAt) Round(r uint64) *AccountAssetInformationAt {
 func (a *AccountAssetInformationAt) Do(ctx context.Context, headers ...*common.Header) (models.AccountAssetResponse, error) {
 	return doAt[models.AccountAssetResponse](ctx, a.s.c, "GET /v2/accounts/{address}/assets/{asset-id}",
 		fmt.Sprintf("/v2/accounts/%s/assets/%s", common.EscapeParams(a.s.address, a.s.assetId)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // AccountAssetsInformationAt is AccountAssetsInformation at a past round.
@@ -154,7 +227,7 @@ func (a *AccountAssetsInformationAt) Next(Next string) *AccountAssetsInformation
 func (a *AccountAssetsInformationAt) Do(ctx context.Context, headers ...*common.Header) (models.AccountAssetsInformationResponse, error) {
 	return doAt[models.AccountAssetsInformationResponse](ctx, a.s.c, "GET /v2/accounts/{address}/assets",
 		fmt.Sprintf("/v2/accounts/%s/assets", common.EscapeParams(a.s.address)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // AccountApplicationsInformationAt is AccountApplicationsInformation at a
@@ -198,7 +271,7 @@ func (a *AccountApplicationsInformationAt) Next(Next string) *AccountApplication
 func (a *AccountApplicationsInformationAt) Do(ctx context.Context, headers ...*common.Header) (models.AccountApplicationsInformationResponse, error) {
 	return doAt[models.AccountApplicationsInformationResponse](ctx, a.s.c, "GET /v2/accounts/{address}/applications",
 		fmt.Sprintf("/v2/accounts/%s/applications", common.EscapeParams(a.s.address)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // AccountApplicationInformationAt is AccountApplicationInformation at a past
@@ -224,7 +297,7 @@ func (a *AccountApplicationInformationAt) Round(r uint64) *AccountApplicationInf
 func (a *AccountApplicationInformationAt) Do(ctx context.Context, headers ...*common.Header) (models.AccountApplicationResponse, error) {
 	return doAt[models.AccountApplicationResponse](ctx, a.s.c, "GET /v2/accounts/{address}/applications/{application-id}",
 		fmt.Sprintf("/v2/accounts/%s/applications/%s", common.EscapeParams(a.s.address, a.s.applicationId)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // GetApplicationBoxByNameAt is GetApplicationBoxByName at a past round.
@@ -249,7 +322,7 @@ func (a *GetApplicationBoxByNameAt) Round(r uint64) *GetApplicationBoxByNameAt {
 func (a *GetApplicationBoxByNameAt) Do(ctx context.Context, headers ...*common.Header) (models.Box, error) {
 	return doAt[models.Box](ctx, a.s.c, "GET /v2/applications/{application-id}/box",
 		fmt.Sprintf("/v2/applications/%s/box", common.EscapeParams(a.s.applicationId)...),
-		withRound(a.s.p, a.round), a.round, headers)
+		withRound(a.s.p, a.round), a.round, headers, nil)
 }
 
 // SupplyAt is Supply at a past round.
@@ -271,7 +344,7 @@ func (a *SupplyAt) Round(r uint64) *SupplyAt { a.round = r; return a }
 // Do performs the HTTP request.
 func (a *SupplyAt) Do(ctx context.Context, headers ...*common.Header) (models.Supply, error) {
 	return doAt[models.Supply](ctx, a.s.c, "GET /v2/ledger/supply", "/v2/ledger/supply",
-		withRound(nil, a.round), a.round, headers)
+		withRound(nil, a.round), a.round, headers, nil)
 }
 
 // GetAssetByIDAt is GetAssetByID at a past round.
@@ -293,7 +366,7 @@ func (a *GetAssetByIDAt) Round(r uint64) *GetAssetByIDAt { a.round = r; return a
 func (a *GetAssetByIDAt) Do(ctx context.Context, headers ...*common.Header) (models.Asset, error) {
 	return doAt[models.Asset](ctx, a.s.c, "GET /v2/assets/{asset-id}",
 		fmt.Sprintf("/v2/assets/%s", common.EscapeParams(a.s.assetId)...),
-		withRound(nil, a.round), a.round, headers)
+		withRound(nil, a.round), a.round, headers, nil)
 }
 
 // GetApplicationByIDAt is GetApplicationByID at a past round.
@@ -315,7 +388,7 @@ func (a *GetApplicationByIDAt) Round(r uint64) *GetApplicationByIDAt { a.round =
 func (a *GetApplicationByIDAt) Do(ctx context.Context, headers ...*common.Header) (models.Application, error) {
 	return doAt[models.Application](ctx, a.s.c, "GET /v2/applications/{application-id}",
 		fmt.Sprintf("/v2/applications/%s", common.EscapeParams(a.s.applicationId)...),
-		withRound(nil, a.round), a.round, headers)
+		withRound(nil, a.round), a.round, headers, nil)
 }
 
 // GetApplicationBoxesAt lists an application's boxes at a round. Upstream's
@@ -371,5 +444,6 @@ func (a *GetApplicationBoxesAt) Do(ctx context.Context, headers ...*common.Heade
 	p.Round = 0 // sent by withRound, also when 0
 	return doAt[models.BoxesResponse](ctx, a.s.c, "GET /v2/applications/{application-id}/boxes",
 		fmt.Sprintf("/v2/applications/%s/boxes", common.EscapeParams(a.s.applicationId)...),
-		withRound(p, a.round), a.round, headers)
+		withRound(p, a.round), a.round, headers,
+		func(r *models.BoxesResponse) uint64 { return r.Round })
 }

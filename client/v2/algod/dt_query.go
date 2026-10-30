@@ -91,11 +91,11 @@ type DTFeatures struct {
 }
 
 // DTFeatures finds out whether the node runs dt-algorand and serves past
-// rounds, from its simulate limits: stock algod has none (404). Code that
-// may talk to stock algod should check it first, as stock algod ignores
-// round on reads and answers for its latest round. Other errors (network,
-// 401) are returned. It does not cache: keep the answer. Older dt-algorand
-// builds, without the limits endpoint, are not supported.
+// rounds, from its simulate limits: stock algod has none (404). Reads at a
+// round don't need it, as they check the node's answer themselves
+// (X-Algod-TT-Round); use it to choose a code path beforehand. Other errors
+// (network, 401) are returned. It does not cache: keep the answer. Older
+// dt-algorand builds, without the limits endpoint, are not supported.
 func (c *Client) DTFeatures(ctx context.Context) (DTFeatures, error) {
 	limits, err := c.SimulateLimits().Do(ctx)
 	if err == nil {

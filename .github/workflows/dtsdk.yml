@@ -1,7 +1,7 @@
 name: go-dtalgorand-sdk
 
 # CI for the dtalgorand branch of go-dtalgorand-sdk. Pushing a v<version> tag
-# (v2.11.1-dt.3.0.0.1) on dtalgorand tests it and creates its GitHub release;
+# (v2.14.0-dt.4.0.0.1) on dtalgorand tests it and creates its GitHub release;
 # the Go module proxy serves the tag itself. See "Releasing" in DTALGOSDK.md.
 on:
   push:

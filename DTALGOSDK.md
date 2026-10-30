@@ -4,7 +4,7 @@ go-dtalgorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/
 
 It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's.
 
-It targets current dt-algorand builds, as dtalgosdk does: older builds, which lack the simulate limits endpoint or some versions options, are not supported. To run against nodes that may be stock algod, gate on [`DTFeatures`](#limits-and-detecting-the-node).
+It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dtalgosdk does: older builds, which lack the simulate limits endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#limits-and-detecting-the-node).
 
 - [Installing](#installing)
 - [Reads at past rounds](#reads-at-past-rounds)
@@ -25,11 +25,11 @@ It targets current dt-algorand builds, as dtalgosdk does: older builds, which la
 Replace the module in your `go.mod`, keeping your imports:
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.3.0.0.1
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.0.0.1
 go mod tidy
 ```
 
-That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/go-dtalgorand-sdk/v2 v2.14.0-dt.3.0.0.1`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
+That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/go-dtalgorand-sdk/v2 v2.14.0-dt.4.0.0.1`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
 
 What to know about `replace`:
 
@@ -53,7 +53,16 @@ page, err := client.GetApplicationBoxesAt(appID, r).Limit(100).Do(ctx)
 
 `Round` returns a request whose type ends in `At` (`*AccountInformationAt`), with the same setters. Setters on the original request still apply until `Do`, and the `At` request's setters change the original's parameters, so don't set them on one base request from several goroutines.
 
-A node without time travel refuses past rounds ("requires EnableTimeTravel", "given round is no longer available"), which gives a `*DTUnsupportedError`. Stock algod is different: it ignores `round` and answers for its latest round, and the SDK doesn't check the response's round. Check `DTFeatures` first when the node may be stock algod.
+The node marks every answer it gives as of the round with an `X-Algod-TT-Round` header holding that round, errors after it accepted the round included, so a 404 means "not found at that round". The SDK checks it on every read at a round:
+
+- The header holds the round: the answer stands.
+- The header holds another round: a plain error, as the node is broken.
+- No header on a 200 or a 404: a `*DTUnsupportedError` with `RequestedRound`. Stock algod ignores `round` and answers for its latest round without the header, as do dt-algorand builds before dt4.
+- No header on another error: the error as is. The node doesn't mark malformed requests or its refusals of the round.
+
+A node without time travel refuses past rounds ("requires EnableTimeTravel", "given round is no longer available"), which gives a `*DTUnsupportedError`.
+
+`GetApplicationBoxesAt` is the exception: stock algod answers it for recent rounds, without the header. A 200 without the header is checked by the round its body reports, and a 404 without it is returned as is.
 
 Upstream's `GetApplicationBoxes(appID).Round(r)` is unchanged. It drops round 0; use `GetApplicationBoxesAt` instead.
 
@@ -111,6 +120,7 @@ This lists the accounts that hold an asset at a round, in address order, includi
 
 - Pages hold at most `Limit` holders (default 1,000, at most 10,000). They can be short or empty while more remain.
 - `Pages` and `All` read every page at the first page's round when `Round` isn't set.
+- With a round, the answer is checked by its `X-Algod-TT-Round` header, as for [reads at past rounds](#reads-at-past-rounds).
 - A node with time travel or the index off gives a `*DTUnsupportedError`. `SupportsAssetHolders(ctx)` tells beforehand.
 - An index still being built gives a 503 (`IsHistoryUnavailable`).
 - An asset that doesn't exist at the round gives a 404.
@@ -193,6 +203,7 @@ if effort, ok := algod.ParseEffort(info.Header); ok {
 ```
 
 - A node with `EnableEffortHeader` sends `X-Algod-Effort` (`algod.EffortHeader`) with the work a request did. It sends it on simulate, query, versions, deltas and reads at a past round, but never on 503s or reads at the latest round. It is meant for a proxy to read and strip.
+- A time-travel node marks answers given as of a requested round with `X-Algod-TT-Round` (`algod.TTRoundHeader`), which `algod.ParseTTRound` reads. Reads at a round check it themselves.
 - After a request that got no response, `ResponseInfo` is empty. `Pages` and `All` leave the last page's.
 - Don't share one `ResponseInfo` between concurrent requests.
 
@@ -202,8 +213,8 @@ What the fork's methods do against stock algod, and against dt-algorand with a f
 
 | Feature | Stock algod | dt-algorand with the feature off |
 |---|---|---|
-| `Round` reads | answer for the latest round, unchecked: gate on `DTFeatures` | `DTUnsupportedError` ("requires EnableTimeTravel") |
-| `GetApplicationBoxesAt` | `DTUnsupportedError` for rounds it no longer holds | same |
+| `Round` reads | `DTUnsupportedError`: it answers for the latest round (a 404 too), without `X-Algod-TT-Round` | `DTUnsupportedError` ("requires EnableTimeTravel") |
+| `GetApplicationBoxesAt` | served for recent rounds (checked by the body's round); `DTUnsupportedError` for rounds it no longer holds | same |
 | Versions | `DTUnsupportedError` (404), except `AssetVersions`, `AccountAssetVersions` and `AccountApplicationVersions`, which get its router's 400 | `DTUnsupportedError` (404 without `EnableTimeTravel`) |
 | `GetAssetHolders` | its router's 400 | `DTUnsupportedError` (time travel or index off); 503 while the index is built |
 | `Query` | `DTUnsupportedError` (404) | `DTUnsupportedError` (queries disabled) |
@@ -222,7 +233,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 ## Versions of this module
 
-Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dtalgosdk. For example, `v2.14.0-dt.3.0.0.1` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt3, and is this SDK's release 0.0.1 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
+Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dtalgosdk. For example, `v2.14.0-dt.4.0.0.1` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 0.0.1 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
 
 The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
 

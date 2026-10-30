@@ -22,6 +22,9 @@ var ErrDTUnsupported = errors.New("the node does not support this time-travel re
 // DTUnsupportedError says that a node cannot answer a time-travel request:
 // it is stock algod, or a dt-algorand node with the feature off. It is
 // returned when the node:
+//   - answered a read at a round, or its 404, without marking it with the
+//     round (X-Algod-TT-Round): stock algod ignores round and answers for its
+//     latest round, and older dt-algorand builds don't send the header;
 //   - refused past rounds ("requires EnableTimeTravel", "given round is no
 //     longer available");
 //   - has no versions or holders endpoints (time travel off, 404), or the
@@ -29,9 +32,7 @@ var ErrDTUnsupported = errors.New("the node does not support this time-travel re
 //   - has no query endpoint (404) or queries disabled;
 //   - has no simulate limits endpoint (stock algod).
 //
-// Stock algod ignores round on reads and answers for its latest round, which
-// the SDK doesn't detect: check DTFeatures first. Older dt-algorand builds
-// are not supported.
+// Older dt-algorand builds are not supported.
 type DTUnsupportedError struct {
 	// Op names the request, such as "GET /v2/accounts/{address}".
 	Op string
@@ -61,12 +62,18 @@ func unsupported(op, reason string, cause error) *DTUnsupportedError {
 // and headers, reusing the caller's ResponseInfo if it passed one, and wraps
 // an error response in a common.ResponseError.
 func dtCall(ctx context.Context, request func(ctx context.Context) error) error {
+	_, err := dtCallInfo(ctx, request)
+	return err
+}
+
+// dtCallInfo is dtCall, also returning the response's status and headers.
+func dtCallInfo(ctx context.Context, request func(ctx context.Context) error) (*common.ResponseInfo, error) {
 	info := common.ResponseInfoFrom(ctx)
 	if info == nil {
 		info = &common.ResponseInfo{}
 		ctx = common.WithResponseInfo(ctx, info)
 	}
-	return common.WrapResponseError(request(ctx), info)
+	return info, common.WrapResponseError(request(ctx), info)
 }
 
 // StatusCode returns the HTTP status of an algod error response: a

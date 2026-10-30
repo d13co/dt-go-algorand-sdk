@@ -23,8 +23,10 @@ type getAssetHoldersParams struct {
 // address order, with their balance and frozen flag; accounts opted in with
 // a zero balance are listed. It needs a time-travel node with the asset
 // holders index (TimeTravelHoldersIndex): other nodes give a
-// *DTUnsupportedError. SupportsAssetHolders tells beforehand. An asset that doesn't exist at the round is a 404,
-// and an index still being built a 503 (IsHistoryUnavailable).
+// *DTUnsupportedError. SupportsAssetHolders tells beforehand. An asset that
+// doesn't exist at the round is a 404, and an index still being built a 503
+// (IsHistoryUnavailable). With a round, the answer must carry it in its
+// X-Algod-TT-Round header, as for reads at a round.
 //
 // Pages hold at most Limit holders, and stop after examining 100,000
 // accounts that ever held the asset, so a page can be short, or empty, while
@@ -117,16 +119,19 @@ func (s *GetAssetHolders) All(ctx context.Context, headers ...*common.Header) it
 	}
 }
 
+// fetch gets a page. With a round, the answer must carry it in its
+// X-Algod-TT-Round header (checkTTRound).
 func (s *GetAssetHolders) fetch(ctx context.Context, q getAssetHoldersParams, headers []*common.Header) (page models.AssetHoldersResponse, err error) {
-	err = dtCall(ctx, func(ctx context.Context) error {
+	info, err := dtCallInfo(ctx, func(ctx context.Context) error {
 		return s.c.get(ctx, &page, fmt.Sprintf("/v2/assets/%s/holders", common.EscapeParams(s.assetId)...), q, headers)
 	})
 	switch {
-	case err == nil:
-	case hasStatus(err, http.StatusNotFound, nil) && !reAssetMissing.MatchString(err.Error()):
-		err = unsupported(assetHoldersOp, "the node has time travel off (EnableTimeTravel)", err)
-	case hasStatus(err, http.StatusBadRequest, reHoldersOff):
-		err = unsupported(assetHoldersOp, "the node has the asset holders index off (TimeTravelHoldersIndex)", err)
+	case err != nil && hasStatus(err, http.StatusNotFound, nil) && !reAssetMissing.MatchString(err.Error()):
+		return page, unsupported(assetHoldersOp, "the node has time travel off (EnableTimeTravel)", err)
+	case err != nil && hasStatus(err, http.StatusBadRequest, reHoldersOff):
+		return page, unsupported(assetHoldersOp, "the node has the asset holders index off (TimeTravelHoldersIndex)", err)
+	case q.Round != nil:
+		return page, checkTTRound(assetHoldersOp, *q.Round, info, err, nil)
 	}
 	return page, err
 }
