@@ -110,25 +110,16 @@ func TestRoundSetBeforeOrAfterSetters(t *testing.T) {
 	assert.Equal(t, "exclude=all&round=5", s.requests[0].URL.RawQuery)
 }
 
-func TestRoundMismatchIsUnsupported(t *testing.T) {
-	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+func TestRoundReadsDontCheckTheRound(t *testing.T) {
+	// Stock algod ignores round: the SDK doesn't detect it (DTFeatures does).
+	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, `{"round":99,"current_round":99}`)
 	})
-	_, err := c.AccountInformation("A").Round(5).Do(context.Background())
-	var e *DTUnsupportedError
-	require.ErrorAs(t, err, &e)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	assert.Equal(t, uint64(5), *e.RequestedRound)
-	assert.Equal(t, uint64(99), *e.ReturnedRound)
-
-	_, err = c.Supply().Round(5).Do(context.Background())
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-
-	// Asset and application reads report no round: they can't be checked.
-	_, err = c.GetAssetByID(1).Round(5).Do(context.Background())
-	assert.NoError(t, err)
+	acct, err := c.AccountInformation("A").Round(5).Do(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, uint64(99), acct.Round)
+	assert.Len(t, s.requests, 1)
 }
-
 func TestPastRoundRefused(t *testing.T) {
 	for _, msg := range []string{
 		"looking up past rounds requires EnableTimeTravel",
@@ -142,45 +133,21 @@ func TestPastRoundRefused(t *testing.T) {
 	}
 }
 
-func TestRound404ProbesTheNode(t *testing.T) {
-	stock := func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) }
-	holdingGone := func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 404, `{"message":"account asset info not found"}`)
-	}
-
-	// Stock algod: the read and both probes are 404s.
+func TestRound404IsTheNodesAnswer(t *testing.T) {
 	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/accounts/A/assets/1" {
-			holdingGone(w, r)
-			return
-		}
-		stock(w, r)
-	})
-	_, err := c.AccountAssetInformation("A", 1).Round(5).Do(context.Background())
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	require.Len(t, s.requests, 3)
-	assert.Equal(t, "/v2/transactions/simulate/limits", s.requests[1].URL.Path)
-	assert.Equal(t, "/v2/applications/0/box/versions", s.requests[2].URL.Path)
-
-	// A time-travel node: the 404 is the node's answer for that round.
-	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/transactions/simulate/limits" {
-			reply(w, 200, `{"time-travel":true}`)
-			return
-		}
-		holdingGone(w, r)
+		reply(w, 404, `{"message":"account asset info not found"}`)
 	})
 	var info common.ResponseInfo
 	ctx := common.WithResponseInfo(context.Background(), &info)
-	_, err = c.AccountAssetInformation("A", 1).Round(5).Do(ctx)
+	_, err := c.AccountAssetInformation("A", 1).Round(5).Do(ctx)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrDTUnsupported)
 	code, ok := StatusCode(err)
 	assert.True(t, ok)
 	assert.Equal(t, 404, code)
-	assert.Equal(t, 404, info.StatusCode, "the probe must not overwrite the caller's ResponseInfo")
+	assert.Equal(t, 404, info.StatusCode)
+	assert.Len(t, s.requests, 1, "no probe")
 }
-
 func TestVersionsQueryStrings(t *testing.T) {
 	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, `{"round":1,"versions":[]}`)
@@ -223,11 +190,10 @@ func TestVersionsQueryStrings(t *testing.T) {
 }
 
 func TestVersionsRounds(t *testing.T) {
-	var body string
-	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 200, body) })
+	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"round":5,"versions":[{"round":3,"deleted":true},{"round":5,"changed-round":4,"deleted":false}]}`)
+	})
 	ctx := context.Background()
-
-	body = `{"round":5,"versions":[{"round":3,"deleted":true},{"round":5,"changed-round":4,"deleted":false}]}`
 	page, err := c.AssetVersions(1).Rounds([]uint64{5, 3, 5, 3}).Do(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "3,5", s.requests[0].URL.Query().Get("rounds"), "sorted and deduplicated")
@@ -235,22 +201,10 @@ func TestVersionsRounds(t *testing.T) {
 	assert.Nil(t, page.Versions[0].ChangedRound)
 	assert.Equal(t, uint64(4), *page.Versions[1].ChangedRound)
 
-	// A node that ignored rounds answers range versions.
-	body = `{"round":9,"versions":[{"round":7,"deleted":false}]}`
-	_, err = c.AssetVersions(1).Rounds([]uint64{5}).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	body = `{"round":9,"versions":[]}`
-	_, err = c.AssetVersions(1).Rounds([]uint64{5}).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	// Without rounds an empty page is fine.
-	_, err = c.AssetVersions(1).Do(ctx)
-	assert.NoError(t, err)
-
 	_, err = c.AssetVersions(1).Rounds(nil).Do(ctx)
 	assert.NoError(t, err)
 	assert.False(t, s.requests[len(s.requests)-1].URL.Query().Has("rounds"))
 }
-
 func TestVersionsKeys(t *testing.T) {
 	var body string
 	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 200, body) })
@@ -263,21 +217,10 @@ func TestVersionsKeys(t *testing.T) {
 	assert.Empty(t, *page.Versions[0].ChangedKeys)
 
 	body = `{"round":5,"versions":[{"round":5,"deleted":false}]}`
-	_, err = c.ApplicationVersions(1).Keys().Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	_, err = c.ApplicationVersions(1).Do(ctx)
-	assert.NoError(t, err, "without Keys, no changed keys is expected")
-
-	body = `{"round":5,"versions":[{"round":5,"apps-local-state":[{"app-id":1,"deleted":false}]}]}`
-	_, err = c.AccountVersions("A").Keys().Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	_, err = c.AccountApplicationVersions("A", 1).Keys().Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	body = `{"round":5,"versions":[{"round":5,"apps-local-state":[{"app-id":1,"deleted":true}]}]}`
-	_, err = c.AccountVersions("A").Keys().Do(ctx)
-	assert.NoError(t, err, "a deleted local state has no keys")
+	page, err = c.ApplicationVersions(1).Do(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, page.Versions[0].ChangedKeys)
 }
-
 func TestVersionsUnsupported(t *testing.T) {
 	cases := []struct {
 		status      int
@@ -285,9 +228,7 @@ func TestVersionsUnsupported(t *testing.T) {
 		unsupported bool
 	}{
 		{404, "Not Found", true},
-		{400, `Invalid format for parameter asset-id: error binding string parameter: strconv.ParseUint: parsing \"4/versions\": invalid syntax`, true},
-		{400, "versions require EnableTimeTravel", true},
-		{400, "invalid include value: keys", true},
+		{400, "invalid include value: keys", false},
 		{400, "rounds cannot be combined with min-round or max-round", false},
 		{400, `unable to parse next: strconv.ParseUint: parsing \"x\": invalid syntax`, false},
 	}
@@ -377,7 +318,6 @@ func TestAssetHoldersUnsupported(t *testing.T) {
 	}{
 		{404, "Not Found", true},
 		{404, "asset does not exist", false},
-		{400, `Invalid format for parameter asset-id: error binding string parameter: strconv.ParseUint: parsing \"7/holders\": invalid syntax`, true},
 		{400, "asset holders require EnableTimeTravel and TimeTravelHoldersIndex", true},
 		{503, "timetravel: the asset holders index is not complete: build it with ttimport -holders-index while the node is stopped", false},
 	}
@@ -501,18 +441,6 @@ func TestDTFeatures(t *testing.T) {
 	assert.True(t, f.Limits.TimeTravel)
 	assert.Nil(t, f.Limits.Query, "queries disabled")
 
-	// An older fork build: no limits endpoint, but versions routes.
-	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/applications/0/box/versions" {
-			reply(w, 400, `{"message":"application does not exist"}`)
-			return
-		}
-		reply(w, 404, `{"message":"Not Found"}`)
-	})
-	f, err = c.DTFeatures(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, DTFeatures{Supported: true, TimeTravel: true}, f)
-
 	// Stock algod.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) })
 	f, err = c.DTFeatures(ctx)
@@ -599,23 +527,6 @@ func TestReviewGaps(t *testing.T) {
 		assert.False(t, f.TimeTravel)
 	})
 
-	t.Run("the 404 probe is cached", func(t *testing.T) {
-		c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/v2/transactions/simulate/limits" {
-				reply(w, 200, `{"time-travel":true}`)
-				return
-			}
-			reply(w, 404, `{"message":"box not found"}`)
-		})
-		for i := 0; i < 3; i++ {
-			_, err := c.GetApplicationBoxByName(1, []byte("b")).Round(5).Do(ctx, &common.Header{Key: "X-Test", Value: "1"})
-			require.Error(t, err)
-			assert.NotErrorIs(t, err, ErrDTUnsupported)
-		}
-		assert.Len(t, s.requests, 4, "three reads and one probe")
-		assert.Equal(t, "1", s.requests[1].Header.Get("X-Test"), "the probe sends the request's headers")
-	})
-
 	t.Run("holders token loop and early stop", func(t *testing.T) {
 		c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
 			reply(w, 200, `{"round":3,"next-token":"B","holders":[{"address":"A","amount":1,"is-frozen":false}]}`)
@@ -650,11 +561,50 @@ func TestReviewGaps(t *testing.T) {
 		assert.Equal(t, url.Values{"rounds": {"5,7,9"}, "order": {"desc"}, "limit": {"2"}, "next": {"5"}}, s.requests[1].URL.Query())
 	})
 
-	t.Run("created apps are not checked for keys", func(t *testing.T) {
-		c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-			reply(w, 200, `{"round":5,"versions":[{"round":5,"created-apps":[{"app-id":1,"deleted":false}]}]}`)
+}
+
+func TestSupportsAssetHolders(t *testing.T) {
+	ctx := context.Background()
+	limits := func(tt bool) string { return fmt.Sprintf(`{"max-txn-groups":16,"time-travel":%v}`, tt) }
+	cases := []struct {
+		name     string
+		limits   string
+		holders  func(w http.ResponseWriter)
+		want     bool
+		wantErr  bool
+		requests int
+	}{
+		{"stock algod", "", nil, false, false, 1},
+		{"time travel off", limits(false), nil, false, false, 1},
+		{"index off", limits(true), func(w http.ResponseWriter) {
+			reply(w, 400, `{"message":"asset holders require EnableTimeTravel and TimeTravelHoldersIndex"}`)
+		}, false, false, 2},
+		{"index on", limits(true), func(w http.ResponseWriter) {
+			reply(w, 400, `{"message":"limit must be between 1 and 10000"}`)
+		}, true, false, 2},
+		{"index being built", limits(true), func(w http.ResponseWriter) {
+			reply(w, 503, `{"message":"timetravel: the asset holders index is not complete"}`)
+		}, false, true, 2},
+	}
+	for _, tc := range cases {
+		c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/v2/transactions/simulate/limits" && tc.limits != "":
+				reply(w, 200, tc.limits)
+			case r.URL.Path == "/v2/assets/0/holders" && tc.holders != nil:
+				assert.Equal(t, "limit=0", r.URL.RawQuery)
+				tc.holders(w)
+			default:
+				reply(w, 404, `{"message":"Not Found"}`)
+			}
 		})
-		_, err := c.AccountVersions("A").Keys().Exclude("created-apps-params").Do(ctx)
-		assert.NoError(t, err)
-	})
+		got, err := c.SupportsAssetHolders(ctx)
+		assert.Equal(t, tc.wantErr, err != nil, tc.name)
+		assert.Equal(t, tc.want, got, tc.name)
+		assert.Len(t, s.requests, tc.requests, tc.name)
+	}
+}
+
+func TestDeltasBusy(t *testing.T) {
+	assert.True(t, IsNodeBusy(errors.New(`HTTP 503: {"message":"every slot for re-evaluating old rounds is in use"}`)))
 }

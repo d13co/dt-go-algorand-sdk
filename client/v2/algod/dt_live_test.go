@@ -60,8 +60,8 @@ func TestLiveTimeTravel(t *testing.T) {
 		f, err := c.DTFeatures(ctx)
 		require.NoError(t, err)
 		require.True(t, f.Supported)
+		require.True(t, f.TimeTravel)
 		require.NotNil(t, f.Limits)
-		assert.True(t, f.Limits.TimeTravel)
 		assert.GreaterOrEqual(t, f.Limits.MaxTxnGroups, uint64(1))
 	})
 
@@ -221,6 +221,9 @@ func TestLiveTimeTravel(t *testing.T) {
 	})
 
 	t.Run("holders", func(t *testing.T) {
+		if ok, err := c.SupportsAssetHolders(ctx); err != nil || !ok {
+			t.Skipf("no holders index: %v", err)
+		}
 		var pages []models.AssetHoldersResponse
 		for page, err := range c.GetAssetHolders(liveUSDC).Limit(2).Pages(ctx) {
 			if errors.Is(err, ErrDTUnsupported) || IsHistoryUnavailable(err) {
@@ -244,23 +247,23 @@ func TestLiveStockAlgod(t *testing.T) {
 
 	f, err := c.DTFeatures(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, DTFeatures{}, f)
-
-	status, err := c.Status().Do(ctx)
+	assert.Equal(t, DTFeatures{}, f, "DTFeatures is the gate: reads at a round are not checked")
+	ok, err := c.SupportsAssetHolders(ctx)
 	require.NoError(t, err)
-	past := status.LastRound + 1_000_000 // any round but the latest
-	_, err = c.AccountInformation(liveXGovCreator).Exclude([]string{"all"}).Round(past).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported, "stock algod ignores round")
-	_, err = c.AccountAssetInformation(liveXGovCreator, liveUSDC).Round(past).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported, "a 404 from stock algod")
-	_, err = c.Supply().Round(past).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
-	_, err = c.AssetVersions(liveUSDC).Do(ctx)
+	assert.False(t, ok)
+
+	_, err = c.SimulateLimits().Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported)
 	_, err = c.ApplicationBoxesVersions(liveNFD).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "404")
+	// Stock algod's router hands {id}/versions and {id}/holders to the plain
+	// lookup, which answers 400: a plain error, as DTFeatures is the gate.
+	_, err = c.AssetVersions(liveUSDC).Do(ctx)
+	code, _ := StatusCode(err)
+	assert.Equal(t, 400, code)
 	_, err = c.GetAssetHolders(liveUSDC).Do(ctx)
-	assert.ErrorIs(t, err, ErrDTUnsupported)
+	code, _ = StatusCode(err)
+	assert.Equal(t, 400, code)
 	_, err = c.Query(models.QueryRequest{AppId: liveXGov, Calls: []models.QueryCall{{}}}).Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported)
 }

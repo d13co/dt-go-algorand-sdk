@@ -20,15 +20,18 @@ import (
 var ErrDTUnsupported = errors.New("the node does not support this time-travel request")
 
 // DTUnsupportedError says that a node cannot answer a time-travel request:
-// it is stock algod or a fork build without the feature, or a fork node with
-// the feature off. It is returned when the node:
-//   - answered a read at a round for another round (stock algod ignores
-//     round and answers for the latest), or answered 404 to such a read and is
-//     not a time-travel node;
+// it is stock algod, or a dt-algorand node with the feature off. It is
+// returned when the node:
 //   - refused past rounds ("requires EnableTimeTravel", "given round is no
 //     longer available");
-//   - has no versions, holders or query endpoint, or has it disabled;
-//   - ignored rounds or include=keys on a versions request.
+//   - has no versions or holders endpoints (time travel off, 404), or the
+//     holders index off;
+//   - has no query endpoint (404) or queries disabled;
+//   - has no simulate limits endpoint (stock algod).
+//
+// Stock algod ignores round on reads and answers for its latest round, which
+// the SDK doesn't detect: check DTFeatures first. Older dt-algorand builds
+// are not supported.
 type DTUnsupportedError struct {
 	// Op names the request, such as "GET /v2/accounts/{address}".
 	Op string
@@ -36,8 +39,6 @@ type DTUnsupportedError struct {
 	Reason string
 	// RequestedRound is the round asked for, if the request had one.
 	RequestedRound *uint64
-	// ReturnedRound is the round the node answered for, if it reported one.
-	ReturnedRound *uint64
 	// Cause is the node's error response, if any.
 	Cause error
 }
@@ -102,28 +103,26 @@ func hasStatus(err error, status int, re *regexp.Regexp) bool {
 // constants (go-algorand dtalgorand): errBusy (request_limits.go),
 // errOperationNotAvailableDuringCatchup, timetravel.ErrNoBoxIndex,
 // timetravel.ErrNoHoldersIndex, ledger.ErrHistoryUntrusted,
-// ledger.ErrRoundTooLarge ("too many boxes at one round" in earlier builds),
+// errReevalBusy (ledger.ErrReevalBusy), ledger.ErrRoundTooLarge,
 // ledger.ErrTooManyVersionObjects, simulation.ErrQueryResponseTooLarge,
 // ledger.ErrOnlineStakeUnavailable, and the handlers' own messages.
 var (
-	reNodeBusy         = regexp.MustCompile(`node is busy`)
-	reCatchup          = regexp.MustCompile(`not available during catchup`)
-	reHistory          = regexp.MustCompile(`box index is incomplete|asset holders index is not complete|history is not served`)
-	reRoundTooLarge    = regexp.MustCompile(`one round of boxes is too large|too many boxes at one round|too many objects to merge`)
-	reQueryTooLarge    = regexp.MustCompile(`query response too large`)
-	reOnlineStake      = regexp.MustCompile(`does not record this online stake`)
-	rePastRound        = regexp.MustCompile(`requires? EnableTimeTravel|given round is no longer available`)
-	reVersionsMisparse = regexp.MustCompile(`Invalid format for parameter (?:asset-id|application-id): .*parsing \\?"[^"\\]*/versions\\?": invalid syntax`)
-	reVersionsOff      = regexp.MustCompile(`versions require EnableTimeTravel`)
-	reKeysUnknown      = regexp.MustCompile(`invalid include value: keys`)
-	reHoldersMisparse  = regexp.MustCompile(`Invalid format for parameter asset-id: .*parsing \\?"[^"\\]*/holders\\?": invalid syntax`)
-	reHoldersOff       = regexp.MustCompile(`asset holders require EnableTimeTravel and TimeTravelHoldersIndex|asset holders need a time travel store`)
-	reAssetMissing     = regexp.MustCompile(`asset does not exist`)
-	reQueryDisabled    = regexp.MustCompile(`query is disabled on this node`)
+	reNodeBusy      = regexp.MustCompile(`node is busy|every slot for re-evaluating old rounds is in use`)
+	reCatchup       = regexp.MustCompile(`not available during catchup`)
+	reHistory       = regexp.MustCompile(`box index is incomplete|asset holders index is not complete|history is not served`)
+	reRoundTooLarge = regexp.MustCompile(`one round of boxes is too large|too many objects to merge`)
+	reQueryTooLarge = regexp.MustCompile(`query response too large`)
+	reOnlineStake   = regexp.MustCompile(`does not record this online stake`)
+	rePastRound     = regexp.MustCompile(`requires? EnableTimeTravel|given round is no longer available`)
+	reHoldersOff    = regexp.MustCompile(`asset holders require EnableTimeTravel and TimeTravelHoldersIndex`)
+	reAssetMissing  = regexp.MustCompile(`asset does not exist`)
+	reQueryDisabled = regexp.MustCompile(`query is disabled on this node`)
 )
 
 // IsNodeBusy reports whether err is the node's 503 "the node is busy", from
-// its limit on concurrent simulate, query and delta requests. Retry after a
+// its limit on concurrent simulate and query requests, or "every slot for
+// re-evaluating old rounds is in use", from its limit on rebuilding old
+// deltas. Retry after a
 // moment (RetryAfter), or on another node. Other 503s mean something else
 // (IsCatchingUp, IsHistoryUnavailable).
 func IsNodeBusy(err error) bool { return hasStatus(err, http.StatusServiceUnavailable, reNodeBusy) }

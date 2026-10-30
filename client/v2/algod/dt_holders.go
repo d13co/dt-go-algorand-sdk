@@ -23,7 +23,7 @@ type getAssetHoldersParams struct {
 // address order, with their balance and frozen flag; accounts opted in with
 // a zero balance are listed. It needs a time-travel node with the asset
 // holders index (TimeTravelHoldersIndex): other nodes give a
-// *DTUnsupportedError. An asset that doesn't exist at the round is a 404,
+// *DTUnsupportedError. SupportsAssetHolders tells beforehand. An asset that doesn't exist at the round is a 404,
 // and an index still being built a 503 (IsHistoryUnavailable).
 //
 // Pages hold at most Limit holders, and stop after examining 100,000
@@ -124,11 +124,9 @@ func (s *GetAssetHolders) fetch(ctx context.Context, q getAssetHoldersParams, he
 	switch {
 	case err == nil:
 	case hasStatus(err, http.StatusNotFound, nil) && !reAssetMissing.MatchString(err.Error()):
-		err = unsupported(assetHoldersOp, "the node has no holders endpoint (stock algod, or a fork build before it, or EnableTimeTravel off)", err)
-	case hasStatus(err, http.StatusBadRequest, reHoldersMisparse):
-		err = unsupported(assetHoldersOp, "the node has no holders endpoint (stock algod)", err)
+		err = unsupported(assetHoldersOp, "the node has time travel off (EnableTimeTravel)", err)
 	case hasStatus(err, http.StatusBadRequest, reHoldersOff):
-		err = unsupported(assetHoldersOp, "the node does not have the asset holders index (TimeTravelHoldersIndex)", err)
+		err = unsupported(assetHoldersOp, "the node has the asset holders index off (TimeTravelHoldersIndex)", err)
 	}
 	return page, err
 }

@@ -24,8 +24,8 @@ const QueryLogOverheadBytes = 48
 
 // Query runs read-only calls of a program, or of an existing application, at
 // one or more rounds (POST /v2/query), on a time-travel node. See
-// models.QueryRequest. A node without the endpoint (stock algod, or an older
-// fork build), or with queries disabled, gives a *DTUnsupportedError.
+// models.QueryRequest. Stock algod, or a node with queries disabled, gives a
+// *DTUnsupportedError.
 type Query struct {
 	c *Client
 
@@ -48,7 +48,7 @@ func (s *Query) Do(ctx context.Context, headers ...*common.Header) (response mod
 	switch {
 	case err == nil:
 	case hasStatus(err, http.StatusNotFound, nil):
-		err = unsupported(op, "the node has no query endpoint (stock algod, or a fork build without it)", err)
+		err = unsupported(op, "the node has no query endpoint (stock algod)", err)
 	case hasStatus(err, http.StatusBadRequest, reQueryDisabled):
 		err = unsupported(op, "the node has queries disabled (MaxAPIQueryCalls is 0)", err)
 	}
@@ -72,8 +72,8 @@ func (s *SimulateLimits) Do(ctx context.Context, headers ...*common.Header) (res
 	err = dtCall(ctx, func(ctx context.Context) error {
 		return s.c.get(ctx, &response, "/v2/transactions/simulate/limits", nil, headers)
 	})
-	if hasStatus(err, http.StatusNotFound, nil) || hasStatus(err, http.StatusMethodNotAllowed, nil) {
-		err = unsupported("GET /v2/transactions/simulate/limits", "the node has no simulate limits endpoint (stock algod, or an older fork build)", err)
+	if hasStatus(err, http.StatusNotFound, nil) {
+		err = unsupported("GET /v2/transactions/simulate/limits", "the node is stock algod", err)
 	}
 	return
 }
@@ -85,36 +85,48 @@ type DTFeatures struct {
 	// TimeTravel is whether it serves past rounds (EnableTimeTravel): reads
 	// at a round, versions, and holders with the holders index.
 	TimeTravel bool
-	// Limits holds the node's simulate and query limits; nil for stock algod
-	// and for fork builds older than the limits endpoint. Limits.Query says
-	// whether it takes queries.
+	// Limits holds the node's simulate and query limits; nil for stock algod.
+	// Limits.Query says whether it takes queries.
 	Limits *models.SimulateLimitsResponse
 }
 
 // DTFeatures finds out whether the node runs dt-algorand and serves past
-// rounds, for code that must also run against stock algod. It asks for the
-// simulate limits, and if the node has none, probes a versions route, which
-// older fork builds have when they serve past rounds.
-// Errors other than "not supported" (network errors, 401) are returned. It
-// does not cache: keep the answer. Whether the node has the asset holders
-// index, or sends the effort header, shows only on real requests.
+// rounds, from its simulate limits: stock algod has none (404). Code that
+// may talk to stock algod should check it first, as stock algod ignores
+// round on reads and answers for its latest round. Other errors (network,
+// 401) are returned. It does not cache: keep the answer. Older dt-algorand
+// builds, without the limits endpoint, are not supported.
 func (c *Client) DTFeatures(ctx context.Context) (DTFeatures, error) {
 	limits, err := c.SimulateLimits().Do(ctx)
 	if err == nil {
 		return DTFeatures{Supported: true, TimeTravel: limits.TimeTravel, Limits: &limits}, nil
 	}
-	if !errors.Is(err, ErrDTUnsupported) {
-		return DTFeatures{}, err
-	}
-	_, err = c.ApplicationBoxVersions(0, []byte{0}).Limit(1).Do(ctx)
-	switch {
-	case err == nil:
-		return DTFeatures{Supported: true, TimeTravel: true}, nil
-	case errors.Is(err, ErrDTUnsupported):
+	if errors.Is(err, ErrDTUnsupported) {
 		return DTFeatures{}, nil
-	case hasStatus(err, http.StatusBadRequest, nil):
-		// The route exists but rejected the probe.
-		return DTFeatures{Supported: true, TimeTravel: true}, nil
 	}
 	return DTFeatures{}, err
+}
+
+// SupportsAssetHolders reports whether the node lists asset holders
+// (GetAssetHolders): it must serve past rounds and have the holders index
+// (TimeTravelHoldersIndex). It asks for the limits, then sends a holders
+// request the node rejects: for its index if off, else for its limit. An
+// index still being built (503) and other errors are returned. It does not
+// cache: keep the answer.
+func (c *Client) SupportsAssetHolders(ctx context.Context) (bool, error) {
+	features, err := c.DTFeatures(ctx)
+	if err != nil || !features.TimeTravel {
+		return false, err
+	}
+	_, err = c.GetAssetHolders(0).Limit(0).Do(ctx)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrDTUnsupported):
+		return false, nil
+	case hasStatus(err, http.StatusBadRequest, nil):
+		// The node checks the index before the limit.
+		return true, nil
+	}
+	return false, err
 }

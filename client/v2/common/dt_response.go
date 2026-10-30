@@ -14,11 +14,6 @@ func init() {
 	rawRequestPaths["/v2/query"] = true
 }
 
-// ServerURL returns the URL of the node the client talks to.
-func (client *Client) ServerURL() string {
-	return client.serverURL.String()
-}
-
 // ResponseInfo receives the status code and headers of a response. Pass one
 // in a request's context with WithResponseInfo to read them, for example the
 // X-Algod-Effort or Retry-After headers. Every request made with that

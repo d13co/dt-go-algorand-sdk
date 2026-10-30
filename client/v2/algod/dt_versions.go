@@ -43,16 +43,13 @@ func appArg(b []byte) *string {
 type versionsPage[R, V any] struct {
 	versions func(*R) []V
 	next     func(*R) string
-	round    func(*V) uint64
-	// keysIgnored reports whether a page asked for with include=keys lacks
-	// the changed keys where they must be; nil where keys don't apply.
-	keysIgnored func(*R) bool
 }
 
 // VersionsQuery is a request to one of the versions endpoints of a
 // time-travel node: R is its response (a page) and V a version. The
 // endpoints are registered only with EnableTimeTravel: a node without them
-// gives a *DTUnsupportedError.
+// (or stock algod) gives a *DTUnsupportedError. Older dt-algorand builds are
+// not supported: they may ignore Rounds or Keys.
 //
 // By default a page lists the rounds in [MinRound, MaxRound] at which the
 // object changed, oldest first. With Rounds, it lists the object as of each
@@ -70,7 +67,6 @@ type VersionsQuery[R, V any] struct {
 	p      versionsParams
 	values bool
 	keys   bool
-	rounds []uint64 // sorted and deduplicated; nil when unset
 }
 
 // MinRound includes the versions at this round or later (default 0).
@@ -93,13 +89,12 @@ func (s *VersionsQuery[R, V]) MaxRound(round uint64) *VersionsQuery[R, V] {
 // long list makes a long URL, which some proxies refuse (414).
 func (s *VersionsQuery[R, V]) Rounds(rounds []uint64) *VersionsQuery[R, V] {
 	if len(rounds) == 0 {
-		s.rounds = nil
 		s.p.Rounds = ""
 		return s
 	}
-	s.rounds = slices.Compact(slices.Sorted(slices.Values(rounds)))
-	parts := make([]string, len(s.rounds))
-	for i, r := range s.rounds {
+	sorted := slices.Compact(slices.Sorted(slices.Values(rounds)))
+	parts := make([]string, len(sorted))
+	for i, r := range sorted {
 		parts[i] = strconv.FormatUint(r, 10)
 	}
 	s.p.Rounds = strings.Join(parts, ",")
@@ -227,40 +222,16 @@ func (s *VersionsQuery[R, V]) All(ctx context.Context, headers ...*common.Header
 	}
 }
 
-// fetch gets a page and checks that the node applied rounds and keys.
+// fetch gets a page. The routes are registered only with EnableTimeTravel,
+// so a 404 means the node has time travel off (or is stock algod).
 func (s *VersionsQuery[R, V]) fetch(ctx context.Context, q versionsParams, headers []*common.Header) (page R, err error) {
 	err = dtCall(ctx, func(ctx context.Context) error {
 		return s.c.get(ctx, &page, s.path, q, headers)
 	})
-	switch {
-	case err == nil:
-	case hasStatus(err, http.StatusNotFound, nil),
-		hasStatus(err, http.StatusBadRequest, reVersionsMisparse),
-		hasStatus(err, http.StatusBadRequest, reVersionsOff):
-		return page, unsupported(s.op, "the node has no versions endpoints (EnableTimeTravel)", err)
-	case hasStatus(err, http.StatusBadRequest, reKeysUnknown):
-		return page, unsupported(s.op, "the node rejected include=keys: it does not list changed keys", err)
-	default:
-		return page, err
+	if hasStatus(err, http.StatusNotFound, nil) {
+		err = unsupported(s.op, "the node has time travel off (EnableTimeTravel)", err)
 	}
-	if s.rounds != nil {
-		versions := s.page.versions(&page)
-		if len(versions) == 0 {
-			return page, unsupported(s.op, "the node answered rounds with no entries: it ignored rounds", nil)
-		}
-		for i := range versions {
-			r := s.page.round(&versions[i])
-			if _, found := slices.BinarySearch(s.rounds, r); !found {
-				e := unsupported(s.op, fmt.Sprintf("the node answered an entry for round %d, which was not requested: it ignored rounds", r), nil)
-				e.ReturnedRound = &r
-				return page, e
-			}
-		}
-	}
-	if s.keys && s.page.keysIgnored != nil && s.page.keysIgnored(&page) {
-		return page, unsupported(s.op, "the node answered include=keys without changed-keys: it ignored keys", nil)
-	}
-	return page, nil
+	return page, err
 }
 
 // AccountVersions lists the versions of an account. See VersionsQuery.
@@ -291,20 +262,6 @@ type ApplicationBoxesVersions = VersionsQuery[models.BoxesVersionsResponse, mode
 var accountPage = versionsPage[models.AccountVersionsResponse, models.AccountVersion]{
 	versions: func(r *models.AccountVersionsResponse) []models.AccountVersion { return r.Versions },
 	next:     func(r *models.AccountVersionsResponse) string { return r.NextToken },
-	round:    func(v *models.AccountVersion) uint64 { return v.Round },
-	// A local state that exists must have changed keys, even an empty list.
-	// Created applications are not checked: they have none with
-	// exclude=created-apps-params.
-	keysIgnored: func(r *models.AccountVersionsResponse) bool {
-		for _, v := range r.Versions {
-			for _, ls := range v.AppsLocalState {
-				if !ls.Deleted && ls.ChangedKeys == nil {
-					return true
-				}
-			}
-		}
-		return false
-	},
 }
 
 // AccountVersions lists the versions of everything GET
@@ -320,11 +277,9 @@ func (c *Client) AccountVersions(address string) *AccountVersions {
 // AccountAssetVersions lists the versions of an account's holding of an
 // asset and, if the account created it, of the asset's params.
 func (c *Client) AccountAssetVersions(address string, assetId uint64) *AccountAssetVersions {
-	page := accountPage
-	page.keysIgnored = nil
 	return &AccountAssetVersions{c: c, op: "GET /v2/accounts/{address}/assets/{asset-id}/versions",
 		path: fmt.Sprintf("/v2/accounts/%s/assets/%s/versions", common.EscapeParams(address, assetId)...),
-		page: page}
+		page: accountPage}
 }
 
 // AccountApplicationVersions lists the versions of an account's local state
@@ -343,7 +298,6 @@ func (c *Client) AssetVersions(assetId uint64) *AssetVersions {
 		page: versionsPage[models.AssetVersionsResponse, models.AssetVersion]{
 			versions: func(r *models.AssetVersionsResponse) []models.AssetVersion { return r.Versions },
 			next:     func(r *models.AssetVersionsResponse) string { return r.NextToken },
-			round:    func(v *models.AssetVersion) uint64 { return v.Round },
 		}}
 }
 
@@ -355,15 +309,6 @@ func (c *Client) ApplicationVersions(applicationId uint64) *ApplicationVersions 
 		page: versionsPage[models.ApplicationVersionsResponse, models.ApplicationVersion]{
 			versions: func(r *models.ApplicationVersionsResponse) []models.ApplicationVersion { return r.Versions },
 			next:     func(r *models.ApplicationVersionsResponse) string { return r.NextToken },
-			round:    func(v *models.ApplicationVersion) uint64 { return v.Round },
-			keysIgnored: func(r *models.ApplicationVersionsResponse) bool {
-				for _, v := range r.Versions {
-					if !v.Deleted && v.ChangedKeys == nil {
-						return true
-					}
-				}
-				return false
-			},
 		}}
 }
 
@@ -374,7 +319,6 @@ func (c *Client) ApplicationBoxVersions(applicationId uint64, name []byte) *Appl
 		page: versionsPage[models.BoxVersionsResponse, models.BoxVersion]{
 			versions: func(r *models.BoxVersionsResponse) []models.BoxVersion { return r.Versions },
 			next:     func(r *models.BoxVersionsResponse) string { return r.NextToken },
-			round:    func(v *models.BoxVersion) uint64 { return v.Round },
 		}}
 	s.p.Name = appArg(name)
 	return s
@@ -390,6 +334,5 @@ func (c *Client) ApplicationBoxesVersions(applicationId uint64) *ApplicationBoxe
 		page: versionsPage[models.BoxesVersionsResponse, models.BoxesVersion]{
 			versions: func(r *models.BoxesVersionsResponse) []models.BoxesVersion { return r.Versions },
 			next:     func(r *models.BoxesVersionsResponse) string { return r.NextToken },
-			round:    func(v *models.BoxesVersion) uint64 { return v.Round },
 		}}
 }
