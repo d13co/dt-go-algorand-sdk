@@ -1,7 +1,7 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: POST /v2/query, the simulate
-// limits, and the DTFeatures probe.
+// This file is part of go-dtalgorand-sdk: POST /v2/query, the node's
+// capabilities, and the DTFeatures probe.
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 // MaxQueryRequestBytes is the most bytes a POST /v2/query body may have, a
-// fixed limit of the node that SimulateLimits does not report. The client
+// fixed limit of the node that Capabilities does not report. The client
 // does not check it.
 const MaxQueryRequestBytes = 1_000_000
 
@@ -55,25 +55,25 @@ func (s *Query) Do(ctx context.Context, headers ...*common.Header) (response mod
 	return
 }
 
-// SimulateLimits gets a time-travel node's limits on simulate and query
-// requests (GET /v2/transactions/simulate/limits). Every fork node serves it;
-// stock algod gives a *DTUnsupportedError.
-type SimulateLimits struct {
+// Capabilities gets what a dt-algorand node serves and its limits on
+// simulate, query and other expensive requests (GET /v2/capabilities). Every
+// fork node serves it; stock algod gives a *DTUnsupportedError.
+type Capabilities struct {
 	c *Client
 }
 
-// SimulateLimits gets the node's simulate and query limits.
-func (c *Client) SimulateLimits() *SimulateLimits {
-	return &SimulateLimits{c: c}
+// Capabilities gets what the node serves and its limits.
+func (c *Client) Capabilities() *Capabilities {
+	return &Capabilities{c: c}
 }
 
 // Do performs the HTTP request.
-func (s *SimulateLimits) Do(ctx context.Context, headers ...*common.Header) (response models.SimulateLimitsResponse, err error) {
+func (s *Capabilities) Do(ctx context.Context, headers ...*common.Header) (response models.CapabilitiesResponse, err error) {
 	err = dtCall(ctx, func(ctx context.Context) error {
-		return s.c.get(ctx, &response, "/v2/transactions/simulate/limits", nil, headers)
+		return s.c.get(ctx, &response, "/v2/capabilities", nil, headers)
 	})
 	if hasStatus(err, http.StatusNotFound, nil) {
-		err = unsupported("GET /v2/transactions/simulate/limits", "the node is stock algod", err)
+		err = unsupported("GET /v2/capabilities", "the node is stock algod", err)
 	}
 	return
 }
@@ -85,21 +85,21 @@ type DTFeatures struct {
 	// TimeTravel is whether it serves past rounds (EnableTimeTravel): reads
 	// at a round, versions, and holders with the holders index.
 	TimeTravel bool
-	// Limits holds the node's simulate and query limits; nil for stock algod.
-	// Limits.Query says whether it takes queries.
-	Limits *models.SimulateLimitsResponse
+	// Capabilities holds what the node serves and its limits; nil for stock
+	// algod. Capabilities.Query says whether it takes queries.
+	Capabilities *models.CapabilitiesResponse
 }
 
 // DTFeatures finds out whether the node runs dt-algorand and serves past
-// rounds, from its simulate limits: stock algod has none (404). Reads at a
+// rounds, from its capabilities: stock algod has none (404). Reads at a
 // round don't need it, as they check the node's answer themselves
 // (X-Algod-TT-Round); use it to choose a code path beforehand. Other errors
 // (network, 401) are returned. It does not cache: keep the answer. Older
-// dt-algorand builds, without the limits endpoint, are not supported.
+// dt-algorand builds, without the capabilities endpoint, are not supported.
 func (c *Client) DTFeatures(ctx context.Context) (DTFeatures, error) {
-	limits, err := c.SimulateLimits().Do(ctx)
+	caps, err := c.Capabilities().Do(ctx)
 	if err == nil {
-		return DTFeatures{Supported: true, TimeTravel: limits.TimeTravel, Limits: &limits}, nil
+		return DTFeatures{Supported: true, TimeTravel: caps.TimeTravel, Capabilities: &caps}, nil
 	}
 	if errors.Is(err, ErrDTUnsupported) {
 		return DTFeatures{}, nil
@@ -109,7 +109,7 @@ func (c *Client) DTFeatures(ctx context.Context) (DTFeatures, error) {
 
 // SupportsAssetHolders reports whether the node lists asset holders
 // (GetAssetHolders): it must serve past rounds and have the holders index
-// (TimeTravelHoldersIndex). It asks for the limits, then sends a holders
+// (TimeTravelHoldersIndex). It asks for the capabilities, then sends a holders
 // request the node rejects: for its index if off, else for its limit. An
 // index still being built (503) and other errors are returned. It does not
 // cache: keep the answer.

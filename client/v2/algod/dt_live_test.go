@@ -62,8 +62,8 @@ func TestLiveTimeTravel(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, f.Supported)
 		require.True(t, f.TimeTravel)
-		require.NotNil(t, f.Limits)
-		assert.GreaterOrEqual(t, f.Limits.MaxTxnGroups, uint64(1))
+		require.NotNil(t, f.Capabilities)
+		assert.GreaterOrEqual(t, f.Capabilities.Simulate.MaxTxnGroups, uint64(1))
 	})
 
 	t.Run("reads at a round", func(t *testing.T) {
@@ -192,7 +192,7 @@ func TestLiveTimeTravel(t *testing.T) {
 	t.Run("query", func(t *testing.T) {
 		f, err := c.DTFeatures(ctx)
 		require.NoError(t, err)
-		if f.Limits == nil || f.Limits.Query == nil {
+		if f.Capabilities == nil || f.Capabilities.Query == nil {
 			t.Skip("the node takes no queries")
 		}
 		// #pragma version 10; global Round; itob; log; txn ApplicationArgs 0; log; int 1
@@ -257,7 +257,7 @@ func TestLiveStockAlgod(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 
-	_, err = c.SimulateLimits().Do(ctx)
+	_, err = c.Capabilities().Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported)
 	_, err = c.ApplicationBoxesVersions(liveNFD).Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported, "404")

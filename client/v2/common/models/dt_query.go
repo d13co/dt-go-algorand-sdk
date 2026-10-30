@@ -1,7 +1,7 @@
 package models
 
 // This file is part of go-dtalgorand-sdk: the models of the asset holders,
-// query and simulate limits endpoints of a time-travel algod.
+// query and capabilities endpoints of a time-travel algod.
 
 // AssetHoldersResponse is a page of the accounts that hold an asset.
 type AssetHoldersResponse struct {
@@ -127,12 +127,32 @@ type QueryCallResult struct {
 	Logs [][]byte `json:"logs"`
 }
 
-// SimulateLimitsResponse is a time-travel node's limits on simulate and
-// query requests (GET /v2/transactions/simulate/limits).
-type SimulateLimitsResponse struct {
-	// DeveloperApi is whether the node has the developer API.
+// CapabilitiesResponse is what a dt-algorand node serves and its limits on
+// expensive requests (GET /v2/capabilities).
+type CapabilitiesResponse struct {
+	// DeveloperApi is whether the node has the developer API
+	// (EnableDeveloperAPI): simulate's exec-trace-config, and the future
+	// protocol in simulate and query.
 	DeveloperApi bool `json:"developer-api"`
 
+	// Query holds the limits of POST /v2/query; nil when queries are disabled
+	// (MaxAPIQueryCalls is 0).
+	Query *QueryLimits `json:"query,omitempty"`
+
+	// Simulate holds the limits of simulate requests.
+	Simulate SimulateLimits `json:"simulate"`
+
+	// TimeLimitSeconds is how long an expensive request (simulate, query,
+	// deltas, versions) may run before it fails with 504; 0 for no limit.
+	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
+
+	// TimeTravel is whether the node serves past rounds since genesis
+	// (EnableTimeTravel).
+	TimeTravel bool `json:"time-travel"`
+}
+
+// SimulateLimits is a node's limits on simulate requests.
+type SimulateLimits struct {
 	// MaxExtraOpcodeBudget is the most extra-opcode-budget a simulate request
 	// may ask for, per group.
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
@@ -144,17 +164,9 @@ type SimulateLimitsResponse struct {
 	// MaxTxnGroups is the most transaction groups a simulate request may hold.
 	MaxTxnGroups uint64 `json:"max-txn-groups"`
 
-	// Query holds the query limits; nil when queries are disabled.
-	Query *QueryLimits `json:"query,omitempty"`
-
-	// ResourceLimitMultiplier multiplies a simulate request's resource limits.
+	// ResourceLimitMultiplier multiplies a simulate request's limits on
+	// unnamed resources.
 	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
-
-	// TimeLimitSeconds is how long a request may run; 0 for no limit.
-	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
-
-	// TimeTravel is whether the node serves past rounds.
-	TimeTravel bool `json:"time-travel"`
 }
 
 // QueryLimits is a node's limits on POST /v2/query requests.

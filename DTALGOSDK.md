@@ -4,14 +4,14 @@ go-dtalgorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/
 
 It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's.
 
-It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dtalgosdk does: older builds, which lack the simulate limits endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#limits-and-detecting-the-node).
+It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dtalgosdk does: older builds, which lack the capabilities endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#capabilities-and-detecting-the-node).
 
 - [Installing](#installing)
 - [Reads at past rounds](#reads-at-past-rounds)
 - [Versions](#versions)
 - [Asset holders](#asset-holders)
 - [Query](#query)
-- [Limits and detecting the node](#limits-and-detecting-the-node)
+- [Capabilities and detecting the node](#capabilities-and-detecting-the-node)
 - [Simulate](#simulate)
 - [Errors](#errors)
 - [Response headers and effort](#response-headers-and-effort)
@@ -146,27 +146,27 @@ for _, round := range res.Rounds {
 - Results are limited by `QueryLimits.MaxResponseBytes`, where each log counts `QueryLogOverheadBytes` extra. Split a request that gets `IsQueryResponseTooLarge`.
 - Stock algod (404), or a node with queries disabled, gives a `*DTUnsupportedError`.
 
-## Limits and detecting the node
+## Capabilities and detecting the node
 
 ```go
 f, err := client.DTFeatures(ctx)
 switch {
 case err != nil: // network, auth, ...
 case !f.TimeTravel: // stock algod, or a fork without EnableTimeTravel: latest round only
-case f.Limits != nil && f.Limits.Query != nil: // past rounds, and POST /v2/query
+case f.Capabilities != nil && f.Capabilities.Query != nil: // past rounds, and POST /v2/query
 default: // past rounds, no queries
 }
 ```
 
-- `SimulateLimits()` returns the node's limits on simulate and query requests.
-- `DTFeatures` asks for those limits: stock algod has none (404). `Supported` says the node runs dt-algorand, `TimeTravel` that it serves past rounds.
+- `Capabilities()` returns what the node serves (`TimeTravel`, `DeveloperApi`) and its limits: `TimeLimitSeconds` for expensive requests, `Simulate` for simulate, and `Query` for `POST /v2/query`, nil when queries are disabled (`GET /v2/capabilities`).
+- `DTFeatures` asks for those capabilities: stock algod has none (404). `Supported` says the node runs dt-algorand, `TimeTravel` that it serves past rounds.
 - `SupportsAssetHolders` checks `TimeTravel`, then sends a holders request the node rejects, for its index when off, else for its limit.
 - Both return errors other than "not supported" (network, 401, a holders index still being built), and neither caches: keep the answers.
 - Whether a node sends the effort header shows only on real requests.
 
 ## Simulate
 
-The fork's simulate takes several transaction groups per request: put them in upstream's `SimulateRequest.TxnGroups`. They run in sequence in one block, up to `SimulateLimitsResponse.MaxTxnGroups`. `Round` reaches back to genesis on a time-travel node.
+The fork's simulate takes several transaction groups per request: put them in upstream's `SimulateRequest.TxnGroups`. They run in sequence in one block, up to `CapabilitiesResponse.Simulate.MaxTxnGroups`. `Round` reaches back to genesis on a time-travel node.
 
 The fork's other simulate options (`rounds`, `parallel-groups`, the validity window modes, `protocol`) are not in this SDK. The fork plans to move them to `/v2/query`.
 
@@ -218,7 +218,7 @@ What the fork's methods do against stock algod, and against dt-algorand with a f
 | Versions | `DTUnsupportedError` (404), except `AssetVersions`, `AccountAssetVersions` and `AccountApplicationVersions`, which get its router's 400 | `DTUnsupportedError` (404 without `EnableTimeTravel`) |
 | `GetAssetHolders` | its router's 400 | `DTUnsupportedError` (time travel or index off); 503 while the index is built |
 | `Query` | `DTUnsupportedError` (404) | `DTUnsupportedError` (queries disabled) |
-| `SimulateLimits` | `DTUnsupportedError` (404) | always served |
+| `Capabilities` | `DTUnsupportedError` (404) | always served |
 | `DTFeatures` | zero value | `Supported`, with `TimeTravel` false without `EnableTimeTravel` |
 | Multi-group simulate | 400 "expected 1 transaction group" | — |
 

@@ -561,14 +561,29 @@ func TestDTFeatures(t *testing.T) {
 	ctx := context.Background()
 	// A current fork node.
 	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, `{"max-txn-groups":16,"time-travel":true,"developer-api":false}`)
+		assert.Equal(t, "/v2/capabilities", r.URL.Path)
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":9,"simulate":{"max-txn-groups":16,"max-rounds":4,"max-extra-opcode-budget":320000,"resource-limit-multiplier":2}}`)
 	})
 	f, err := c.DTFeatures(ctx)
 	require.NoError(t, err)
 	assert.True(t, f.Supported)
-	require.NotNil(t, f.Limits)
-	assert.True(t, f.Limits.TimeTravel)
-	assert.Nil(t, f.Limits.Query, "queries disabled")
+	require.NotNil(t, f.Capabilities)
+	assert.Equal(t, models.CapabilitiesResponse{
+		TimeTravel:       true,
+		TimeLimitSeconds: 9,
+		Simulate:         models.SimulateLimits{MaxTxnGroups: 16, MaxRounds: 4, MaxExtraOpcodeBudget: 320000, ResourceLimitMultiplier: 2},
+	}, *f.Capabilities)
+	assert.Nil(t, f.Capabilities.Query, "queries disabled")
+
+	// Queries on.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":true,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-rounds":0,"max-extra-opcode-budget":320000,"resource-limit-multiplier":1},"query":{"max-calls":64,"max-rounds":16,"max-call-budget":700000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":1000000}}`)
+	})
+	f, err = c.DTFeatures(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, f.Capabilities.Query)
+	assert.Equal(t, uint64(64), f.Capabilities.Query.MaxCalls)
+	assert.True(t, f.Capabilities.DeveloperApi)
 
 	// Stock algod.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) })
@@ -648,7 +663,7 @@ func TestReviewGaps(t *testing.T) {
 
 	t.Run("a fork without time travel", func(t *testing.T) {
 		c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-			reply(w, 200, `{"max-txn-groups":16,"time-travel":false}`)
+			reply(w, 200, `{"time-travel":false,"simulate":{"max-txn-groups":16}}`)
 		})
 		f, err := c.DTFeatures(ctx)
 		require.NoError(t, err)
@@ -695,7 +710,7 @@ func TestReviewGaps(t *testing.T) {
 
 func TestSupportsAssetHolders(t *testing.T) {
 	ctx := context.Background()
-	limits := func(tt bool) string { return fmt.Sprintf(`{"max-txn-groups":16,"time-travel":%v}`, tt) }
+	limits := func(tt bool) string { return fmt.Sprintf(`{"time-travel":%v,"simulate":{"max-txn-groups":16}}`, tt) }
 	cases := []struct {
 		name     string
 		limits   string
@@ -719,7 +734,7 @@ func TestSupportsAssetHolders(t *testing.T) {
 	for _, tc := range cases {
 		c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
 			switch {
-			case r.URL.Path == "/v2/transactions/simulate/limits" && tc.limits != "":
+			case r.URL.Path == "/v2/capabilities" && tc.limits != "":
 				reply(w, 200, tc.limits)
 			case r.URL.Path == "/v2/assets/0/holders" && tc.holders != nil:
 				assert.Equal(t, "limit=0", r.URL.RawQuery)

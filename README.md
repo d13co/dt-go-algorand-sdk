@@ -8,7 +8,7 @@ This is go-dtalgorand-sdk, a fork of [go-algorand-sdk](https://github.com/algora
 - **History**: `...Versions` methods list the rounds at which an account, asset, application, box, or any of an app's boxes changed, with paging iterators and values; `Rounds(...)` gives each object as of a set of rounds, `Keys()` the state keys each version changed, and `Key()` / `Prefix()` the history of one state key or box map.
 - **Asset holders**: `GetAssetHolders` lists every holder of an asset at a round.
 - **Query**: `Query` runs read-only TEAL calls (one program or deployed app, many calls) at several rounds per request through `POST /v2/query`.
-- **Limits and detection**: `SimulateLimits`, `DTFeatures` to tell a dt-algorand node that serves past rounds from stock algod, `SupportsAssetHolders`, and a `DTUnsupportedError` when a node has a feature off, so code can fall back.
+- **Capabilities and detection**: `Capabilities` (`GET /v2/capabilities`: what the node serves and its limits), `DTFeatures` to tell a dt-algorand node that serves past rounds from stock algod, `SupportsAssetHolders`, and a `DTUnsupportedError` when a node has a feature off, so code can fall back.
 - **Errors and headers**: `IsNodeBusy`, `RetryAfter`, `IsTimeLimitExceeded`, `IsHistoryUnavailable` and more; `common.WithResponseInfo`, `ParseEffort` and `ParseTTRound` for response headers such as `X-Algod-Effort`.
 
 See **[DTALGOSDK.md](DTALGOSDK.md)** for the details and examples. Source and issues: [d13co/go-dtalgorand-sdk](https://github.com/d13co/go-dtalgorand-sdk) (branch `dtalgorand`).

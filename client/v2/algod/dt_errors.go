@@ -157,7 +157,7 @@ func IsHistoryUnavailable(err error) bool {
 }
 
 // IsTimeLimitExceeded reports whether err is the node's 504: the request ran
-// longer than the node allows (SimulateLimitsResponse.TimeLimitSeconds).
+// longer than the node allows (CapabilitiesResponse.TimeLimitSeconds).
 // Retrying the same request fails again: split it instead.
 func IsTimeLimitExceeded(err error) bool { return hasStatus(err, http.StatusGatewayTimeout, nil) }
 
