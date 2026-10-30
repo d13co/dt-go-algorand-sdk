@@ -25,11 +25,11 @@ It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dtalgosdk does: older bu
 Replace the module in your `go.mod`, keeping your imports:
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.0.0.1
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.1.0.0
 go mod tidy
 ```
 
-That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/go-dtalgorand-sdk/v2 v2.14.0-dt.4.0.0.1`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
+That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/go-dtalgorand-sdk/v2 v2.14.0-dt.4.1.0.0`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
 
 What to know about `replace`:
 
@@ -233,7 +233,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 ## Versions of this module
 
-Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dtalgosdk. For example, `v2.14.0-dt.4.0.0.1` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 0.0.1 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
+Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dtalgosdk. For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
 
 The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
 

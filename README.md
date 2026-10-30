@@ -18,7 +18,7 @@ See **[DTALGOSDK.md](DTALGOSDK.md)** for the details and examples. Source and is
 Keep your imports, and replace the module in your `go.mod` (pin an exact `v*-dt.*` version):
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.0.0.1
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.1.0.0
 go mod tidy
 ```
 
