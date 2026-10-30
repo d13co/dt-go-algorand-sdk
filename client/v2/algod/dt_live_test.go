@@ -164,7 +164,7 @@ func TestLiveTimeTravel(t *testing.T) {
 		require.NotEmpty(t, app.Versions)
 		assert.NotNil(t, app.Versions[0].Application)
 
-		res, err := c.AccountVersions(liveXGovCreator).Exclude("all").Values().MinRound(livePast).Limit(5).Do(ctx)
+		res, err := c.AccountVersions(liveXGovCreator).Exclude([]string{"all"}).Values().MinRound(livePast).Limit(5).Do(ctx)
 		require.NoError(t, err)
 		for _, v := range res.Versions {
 			if v.Base == nil || v.Base.Account == nil {
@@ -262,13 +262,13 @@ func TestLiveStockAlgod(t *testing.T) {
 	_, err = c.ApplicationBoxesVersions(liveNFD).Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported, "404")
 	// Stock algod's router hands {id}/versions and {id}/holders to the plain
-	// lookup, which answers 400: a plain error, as DTFeatures is the gate.
+	// lookup, which answers 400 "Invalid format for parameter asset-id".
 	_, err = c.AssetVersions(liveUSDC).Do(ctx)
-	code, _ := StatusCode(err)
-	assert.Equal(t, 400, code)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "the router's 400")
+	_, err = c.AccountApplicationVersions(liveXGovCreator, liveXGov).Do(ctx)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "the router's 400")
 	_, err = c.GetAssetHolders(liveUSDC).Do(ctx)
-	code, _ = StatusCode(err)
-	assert.Equal(t, 400, code)
+	assert.ErrorIs(t, err, ErrDTUnsupported, "the router's 400")
 	_, err = c.Query(models.QueryRequest{AppId: liveXGov, Calls: []models.QueryCall{{}}}).Do(ctx)
 	assert.ErrorIs(t, err, ErrDTUnsupported)
 

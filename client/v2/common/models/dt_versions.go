@@ -27,7 +27,8 @@ type AccountVersion struct {
 	// Assets lists the asset holdings that changed.
 	Assets []AssetHoldingVersion `json:"assets,omitempty"`
 
-	// Base is the account's base record, present if it changed.
+	// Base is the account's base record, present if it changed, and always
+	// with rounds.
 	Base *AccountBaseVersion `json:"base,omitempty"`
 
 	// CreatedApps lists the params of the created applications that changed.

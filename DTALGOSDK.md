@@ -106,7 +106,7 @@ page, err := client.AssetVersions(assetID).Rounds([]uint64{1_000, 30_000_000, 50
 - Keys, names and prefixes are bytes; the SDK sends them as `b64:` arguments. An empty key is a valid key.
 - In the models, values the node may leave out are pointers: `Base`, `Value`, `ChangedKeys`, `ChangedRound`, `KeyValue`, and the object of each version.
 
-A 404 gives a `*DTUnsupportedError`: the routes are registered only with `EnableTimeTravel`.
+A node without time travel, stock algod included, gives a `*DTUnsupportedError`: the routes are registered only with `EnableTimeTravel`. Such a node answers 404, or 400 for the routes whose paths end in an asset or application ID, which its router hands to the plain lookup.
 
 ## Asset holders
 
@@ -121,7 +121,7 @@ This lists the accounts that hold an asset at a round, in address order, includi
 - Pages hold at most `Limit` holders (default 1,000, at most 10,000). They can be short or empty while more remain.
 - `Pages` and `All` read every page at the first page's round when `Round` isn't set.
 - With a round, the answer is checked by its `X-Algod-TT-Round` header, as for [reads at past rounds](#reads-at-past-rounds).
-- A node with time travel or the index off gives a `*DTUnsupportedError`. `SupportsAssetHolders(ctx)` tells beforehand.
+- A node with time travel or the index off, stock algod included, gives a `*DTUnsupportedError`. `SupportsAssetHolders(ctx)` tells beforehand.
 - An index still being built gives a 503 (`IsHistoryUnavailable`).
 - An asset that doesn't exist at the round gives a 404.
 
@@ -152,7 +152,7 @@ for _, round := range res.Rounds {
 f, err := client.DTFeatures(ctx)
 switch {
 case err != nil: // network, auth, ...
-case !f.TimeTravel: // stock algod, or a fork without EnableTimeTravel: latest round only
+case !f.TimeTravel: // stock algod, or a fork without EnableTimeTravel: no reads at a round, versions or holders; queries and box listings at recent rounds only
 case f.Capabilities != nil && f.Capabilities.Query != nil: // past rounds, and POST /v2/query
 default: // past rounds, no queries
 }
@@ -179,7 +179,7 @@ The fork's other simulate options (`rounds`, `parallel-groups`, the validity win
 | `IsCatchingUp` | 503 during catchpoint catchup |
 | `IsHistoryUnavailable` | 503 for history the node can't serve now: box index or holders index incomplete, or history not served |
 | `IsTimeLimitExceeded` | 504: the request ran past the node's time limit; split it |
-| `IsRoundTooLarge` | 400: a versions request over the node's object limits (an account with too many resources; with `Rounds`, one round of boxes too large) |
+| `IsRoundTooLarge` | 400: a versions request over the node's object limits (an account with too many resources; with `Rounds`, an app with too many boxes, or one round of boxes too large) |
 | `IsQueryResponseTooLarge` | 400: query results over the node's limit |
 | `IsOnlineStakeNotRecorded` | 404: a supply read at a round whose online stake the history lacks |
 | `StatusCode(err)` | the HTTP status of any algod error response |
@@ -202,7 +202,7 @@ if effort, ok := algod.ParseEffort(info.Header); ok {
 }
 ```
 
-- A node with `EnableEffortHeader` sends `X-Algod-Effort` (`algod.EffortHeader`) with the work a request did. It sends it on simulate, query, versions, deltas and reads at a past round, but never on 503s or reads at the latest round. It is meant for a proxy to read and strip.
+- A node with `EnableEffortHeader` sends `X-Algod-Effort` (`algod.EffortHeader`) with the work a request did. It sends it on simulate, query, versions, deltas and reads with a round (`round=<latest>` included), but not on the asset holders listing, on reads without a round, or on answers given before any work (503s, most 400s). `ResponseBytes` is 0 for reads at a round. It is meant for a proxy to read and strip.
 - A time-travel node marks answers given as of a requested round with `X-Algod-TT-Round` (`algod.TTRoundHeader`), which `algod.ParseTTRound` reads. Reads at a round check it themselves.
 - After a request that got no response, `ResponseInfo` is empty. `Pages` and `All` leave the last page's.
 - Don't share one `ResponseInfo` between concurrent requests.
@@ -215,8 +215,8 @@ What the fork's methods do against stock algod, and against dt-algorand with a f
 |---|---|---|
 | `Round` reads | `DTUnsupportedError`: it answers for the latest round (a 404 too), without `X-Algod-TT-Round` | `DTUnsupportedError` ("requires EnableTimeTravel") |
 | `GetApplicationBoxesAt` | served for recent rounds (checked by the body's round); `DTUnsupportedError` for rounds it no longer holds | same |
-| Versions | `DTUnsupportedError` (404), except `AssetVersions`, `AccountAssetVersions` and `AccountApplicationVersions`, which get its router's 400 | `DTUnsupportedError` (404 without `EnableTimeTravel`) |
-| `GetAssetHolders` | its router's 400 | `DTUnsupportedError` (time travel or index off); 503 while the index is built |
+| Versions | `DTUnsupportedError` (404, or its router's 400 for `AssetVersions`, `AccountAssetVersions` and `AccountApplicationVersions`) | `DTUnsupportedError` (the same answers without `EnableTimeTravel`) |
+| `GetAssetHolders` | `DTUnsupportedError` (its router's 400) | `DTUnsupportedError` (time travel or index off); 503 while the index is built |
 | `Query` | `DTUnsupportedError` (404) | `DTUnsupportedError` (queries disabled) |
 | `Capabilities` | `DTUnsupportedError` (404) | always served |
 | `DTFeatures` | zero value | `Supported`, with `TimeTravel` false without `EnableTimeTravel` |
@@ -228,7 +228,8 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 - `GET /v2/ledger/supply` at a round can answer 404 when the history didn't record that round's online stake (`IsOnlineStakeNotRecorded`).
 - `GET /v2/deltas/{round}` rebuilds old rounds, and can answer 503 with `Retry-After` when busy, or 504 at the time limit.
-- `GET /v2/applications/{id}/boxes`: `next` lists the boxes strictly after the given name.
+- `GET /v2/deltas/{round}` answers 500 when rebuilding an old round fails, where upstream answers 404.
+- `POST /v2/participation/generate/{address}` answers 400 on MainNet, TestNet and BetaNet unless the node sets `DangerouslyEnableParticipation`: the fork is not audited for running validators.
 - Simulate and query requests share a node-wide concurrency limit (`SimulateParallelism`), and delta rebuilds have two slots of their own: a request that can't start within 250 ms gets a 503 with `Retry-After: 1` (`IsNodeBusy`).
 
 ## Versions of this module

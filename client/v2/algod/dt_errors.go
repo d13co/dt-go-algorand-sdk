@@ -27,10 +27,10 @@ var ErrDTUnsupported = errors.New("the node does not support this time-travel re
 //     latest round, and older dt-algorand builds don't send the header;
 //   - refused past rounds ("requires EnableTimeTravel", "given round is no
 //     longer available");
-//   - has no versions or holders endpoints (time travel off, 404), or the
-//     holders index off;
+//   - has no versions or holders endpoints (time travel off, or stock
+//     algod), or the holders index off;
 //   - has no query endpoint (404) or queries disabled;
-//   - has no simulate limits endpoint (stock algod).
+//   - has no capabilities endpoint (stock algod).
 //
 // Older dt-algorand builds are not supported.
 type DTUnsupportedError struct {
@@ -132,6 +132,9 @@ var (
 	reHoldersOff    = regexp.MustCompile(`asset holders require EnableTimeTravel and TimeTravelHoldersIndex`)
 	reAssetMissing  = regexp.MustCompile(`asset does not exist`)
 	reQueryDisabled = regexp.MustCompile(`query is disabled on this node`)
+	// Without the time-travel routes, the router hands /v2/assets/{id}/holders
+	// and .../{id}/versions to the plain lookup, which can't parse "{id}/...".
+	reRouteMissing = regexp.MustCompile(`Invalid format for parameter (asset-id|application-id)`)
 )
 
 // IsNodeBusy reports whether err is the node's 503 "the node is busy", from
@@ -150,7 +153,8 @@ func IsCatchingUp(err error) bool { return hasStatus(err, http.StatusServiceUnav
 // serve that history now, which retrying soon won't fix: the box index is
 // incomplete (boxes versions before it), the asset holders index is not
 // complete (still being built), or the time-travel history is not served
-// (the node is still catching it up). Fall back to reads at a round, another
+// (it differs from the chain, or a replay found a problem that a reload
+// clears). Fall back to reads at a round, another
 // node or an indexer.
 func IsHistoryUnavailable(err error) bool {
 	return hasStatus(err, http.StatusServiceUnavailable, reHistory)
@@ -164,9 +168,10 @@ func IsTimeLimitExceeded(err error) bool { return hasStatus(err, http.StatusGate
 // IsRoundTooLarge reports whether err is a versions request over the node's
 // object limits: an account with more resources than the node merges ("too
 // many objects to merge", in range mode too: use Exclude or the per-resource
-// versions endpoints), or with Rounds, one round of an application's boxes
-// too large for a page ("one round of boxes is too large": use Prefix, or
-// GetApplicationBoxesAt at that round).
+// versions endpoints), or with Rounds, an application with more boxes than
+// the node merges ("too many objects to merge") or one round of its boxes
+// too large for a page ("one round of boxes is too large"): use Prefix, or
+// GetApplicationBoxesAt at that round.
 func IsRoundTooLarge(err error) bool {
 	return hasStatus(err, http.StatusBadRequest, reRoundTooLarge)
 }
@@ -209,6 +214,15 @@ func RetryAfter(err error) (time.Duration, bool) {
 		wait = 0
 	}
 	return wait.Round(time.Second), true
+}
+
+// isRouteMissing reports whether err is the 400 a node without the
+// time-travel routes gives a holders or versions request whose path ends in
+// an asset or application ID: the router hands it to the plain lookup, which
+// can't parse "{id}/holders". The SDK always sends a valid ID, so this 400
+// means the route is missing.
+func isRouteMissing(err error) bool {
+	return hasStatus(err, http.StatusBadRequest, reRouteMissing)
 }
 
 // isPastRoundUnsupported reports whether a read at a round was refused

@@ -281,7 +281,7 @@ func TestVersionsQueryStrings(t *testing.T) {
 		reply(w, 200, `{"round":1,"versions":[]}`)
 	})
 	ctx := context.Background()
-	_, err := c.AccountVersions("A").MinRound(0).MaxRound(0).Limit(0).Desc().Values().Keys().Exclude("created-apps-params", "created-assets-params").Next("12").Do(ctx)
+	_, err := c.AccountVersions("A").MinRound(0).MaxRound(0).Limit(0).Desc().Values().Keys().Exclude([]string{"created-apps-params", "created-assets-params"}).Next("12").Do(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "/v2/accounts/A/versions", s.requests[0].URL.Path)
 	assert.Equal(t, url.Values{
@@ -356,6 +356,8 @@ func TestVersionsUnsupported(t *testing.T) {
 		unsupported bool
 	}{
 		{404, "Not Found", true},
+		// A node without the time-travel routes: the plain asset lookup's 400.
+		{400, `Invalid format for parameter asset-id: error binding string parameter: strconv.ParseUint: parsing \"4/versions\": invalid syntax`, true},
 		{400, "invalid include value: keys", false},
 		{400, "rounds cannot be combined with min-round or max-round", false},
 		{400, `unable to parse next: strconv.ParseUint: parsing \"x\": invalid syntax`, false},
@@ -368,6 +370,20 @@ func TestVersionsUnsupported(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, tc.unsupported, errors.Is(err, ErrDTUnsupported), tc.message)
 	}
+
+	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 400, `{"message":"Invalid format for parameter application-id: error binding string parameter: strconv.ParseUint: parsing \"3/versions\": invalid syntax"}`)
+	})
+	_, err := c.AccountApplicationVersions("A", 3).Do(context.Background())
+	assert.ErrorIs(t, err, ErrDTUnsupported, "the plain local state lookup's 400")
+	_, err = c.AccountVersions("A").Do(context.Background())
+	assert.ErrorIs(t, err, ErrDTUnsupported)
+	// An address the caller got wrong is the caller's error.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 400, `{"message":"Invalid format for parameter address: bad checksum"}`)
+	})
+	_, err = c.AccountAssetVersions("A", 2).Do(context.Background())
+	assert.False(t, errors.Is(err, ErrDTUnsupported))
 }
 
 func TestVersionsPages(t *testing.T) {
@@ -447,6 +463,8 @@ func TestAssetHoldersUnsupported(t *testing.T) {
 	}{
 		{404, "Not Found", true},
 		{404, "asset does not exist", false},
+		{400, `Invalid format for parameter asset-id: error binding string parameter: strconv.ParseUint: parsing \"7/holders\": invalid syntax`, true},
+		{400, "limit must be between 1 and 10000", false},
 		{400, "asset holders require EnableTimeTravel and TimeTravelHoldersIndex", true},
 		{503, "timetravel: the asset holders index is not complete: build it with ttimport -holders-index while the node is stopped", false},
 	}

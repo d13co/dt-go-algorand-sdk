@@ -22,8 +22,8 @@ type getAssetHoldersParams struct {
 // GetAssetHolders lists the accounts that hold an asset at a round, in
 // address order, with their balance and frozen flag; accounts opted in with
 // a zero balance are listed. It needs a time-travel node with the asset
-// holders index (TimeTravelHoldersIndex): other nodes give a
-// *DTUnsupportedError. SupportsAssetHolders tells beforehand. An asset that
+// holders index (TimeTravelHoldersIndex): other nodes, stock algod
+// included, give a *DTUnsupportedError. SupportsAssetHolders tells beforehand. An asset that
 // doesn't exist at the round is a 404, and an index still being built a 503
 // (IsHistoryUnavailable). With a round, the answer must carry it in its
 // X-Algod-TT-Round header, as for reads at a round.
@@ -126,7 +126,8 @@ func (s *GetAssetHolders) fetch(ctx context.Context, q getAssetHoldersParams, he
 		return s.c.get(ctx, &page, fmt.Sprintf("/v2/assets/%s/holders", common.EscapeParams(s.assetId)...), q, headers)
 	})
 	switch {
-	case err != nil && hasStatus(err, http.StatusNotFound, nil) && !reAssetMissing.MatchString(err.Error()):
+	case isRouteMissing(err),
+		err != nil && hasStatus(err, http.StatusNotFound, nil) && !reAssetMissing.MatchString(err.Error()):
 		return page, unsupported(assetHoldersOp, "the node has time travel off (EnableTimeTravel)", err)
 	case err != nil && hasStatus(err, http.StatusBadRequest, reHoldersOff):
 		return page, unsupported(assetHoldersOp, "the node has the asset holders index off (TimeTravelHoldersIndex)", err)

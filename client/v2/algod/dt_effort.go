@@ -10,12 +10,13 @@ import (
 )
 
 // EffortHeader is the response header in which a time-travel node with
-// EnableEffortHeader reports the work a request did (simulate, query,
-// versions, deltas, reads at a past round). Read it with
+// EnableEffortHeader reports the work a request did: simulate, query,
+// versions, deltas, and reads with a round (round=<latest> included), but
+// not the asset holders listing, which counts nothing. Read it with
 // common.WithResponseInfo and ParseEffort. The node sends it whenever the
 // option is on (it is meant to run behind a proxy that strips it), also on
-// errors after the work started, but never on 503s or reads at the latest
-// round.
+// errors after the work started, but never on answers given before any work
+// (503s, most 400s) nor on reads without a round.
 const EffortHeader = "X-Algod-Effort"
 
 // Effort is the work a request did, from the X-Algod-Effort header.
@@ -28,7 +29,8 @@ type Effort struct {
 	History int64
 	// Scanned is the entries read by scans (versions, listings).
 	Scanned int64
-	// ResponseBytes is the size of the answer before compression.
+	// ResponseBytes is the size of the answer before compression; 0 for
+	// reads at a round, which are counted by Lookups.
 	ResponseBytes int64
 	// EvalMicroseconds is the time spent serving the request.
 	EvalMicroseconds int64

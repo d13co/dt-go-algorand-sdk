@@ -48,7 +48,9 @@ type versionsPage[R, V any] struct {
 // VersionsQuery is a request to one of the versions endpoints of a
 // time-travel node: R is its response (a page) and V a version. The
 // endpoints are registered only with EnableTimeTravel: a node without them
-// (or stock algod) gives a *DTUnsupportedError. Older dt-algorand builds are
+// (or stock algod) gives a *DTUnsupportedError, from a 404, or from the 400
+// its router gives the endpoints whose paths end in an asset or application
+// ID. Older dt-algorand builds are
 // not supported: they may ignore Rounds or Keys.
 //
 // By default a page lists the rounds in [MinRound, MaxRound] at which the
@@ -150,10 +152,10 @@ func (s *VersionsQuery[R, V]) Prefix(prefix []byte) *VersionsQuery[R, V] {
 	return s
 }
 
-// Exclude narrows account versions as /v2/accounts/{address} does: "all"
+// Exclude narrows account versions as AccountInformation.Exclude does: "all"
 // (the base record only), "none", "created-apps-params",
 // "created-assets-params". Account versions only: other endpoints ignore it.
-func (s *VersionsQuery[R, V]) Exclude(exclude ...string) *VersionsQuery[R, V] {
+func (s *VersionsQuery[R, V]) Exclude(exclude []string) *VersionsQuery[R, V] {
 	s.p.Exclude = strings.Join(exclude, ",")
 	return s
 }
@@ -223,12 +225,13 @@ func (s *VersionsQuery[R, V]) All(ctx context.Context, headers ...*common.Header
 }
 
 // fetch gets a page. The routes are registered only with EnableTimeTravel,
-// so a 404 means the node has time travel off (or is stock algod).
+// so a 404, or the router's 400 for a path ending in an ID
+// (isRouteMissing), means the node has time travel off (or is stock algod).
 func (s *VersionsQuery[R, V]) fetch(ctx context.Context, q versionsParams, headers []*common.Header) (page R, err error) {
 	err = dtCall(ctx, func(ctx context.Context) error {
 		return s.c.get(ctx, &page, s.path, q, headers)
 	})
-	if hasStatus(err, http.StatusNotFound, nil) {
+	if hasStatus(err, http.StatusNotFound, nil) || isRouteMissing(err) {
 		err = unsupported(s.op, "the node has time travel off (EnableTimeTravel)", err)
 	}
 	return page, err

@@ -107,8 +107,8 @@ type QueryRoundResult struct {
 	Error string `json:"error,omitempty"`
 
 	// Protocol says which protocol the calls ran with. It is present when the
-	// request named a protocol, or when the default "latest" changed the
-	// round's.
+	// protocol differed from the round's own, or when the request named a
+	// protocol other than "round".
 	Protocol *SimulateProtocolOverride `json:"protocol,omitempty"`
 
 	// Round is the round.
@@ -143,7 +143,9 @@ type CapabilitiesResponse struct {
 	Simulate SimulateLimits `json:"simulate"`
 
 	// TimeLimitSeconds is how long an expensive request (simulate, query,
-	// deltas, versions) may run before it fails with 504; 0 for no limit.
+	// deltas, versions) may run before it fails with 504; 0 for no limit. A
+	// simulate request with rounds instead gets an error for each round not
+	// finished by then.
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
 	// TimeTravel is whether the node serves past rounds since genesis
@@ -174,16 +176,22 @@ type QueryLimits struct {
 	// MaxCallBudget is the most opcode budget a call may have.
 	MaxCallBudget uint64 `json:"max-call-budget"`
 
-	// MaxCallLogBytes is the most log bytes a call may write.
+	// MaxCallLogBytes is the most bytes each program of a call may log, in up
+	// to 2048 logs; 0 for the protocol's limits (1024 bytes in 32 logs).
 	MaxCallLogBytes uint64 `json:"max-call-log-bytes"`
 
-	// MaxCallStateBytes is the most state bytes a call may read.
+	// MaxCallStateBytes is the most bytes of ledger state a call may read,
+	// each object counted once; 0 for no limit. A call over it fails, and the
+	// other calls run on.
 	MaxCallStateBytes uint64 `json:"max-call-state-bytes"`
 
 	// MaxCalls is the most calls a request may hold.
 	MaxCalls uint64 `json:"max-calls"`
 
-	// MaxResponseBytes is the most bytes of results a response may hold.
+	// MaxResponseBytes is the most bytes of logs and errors a response may
+	// hold, across its calls and rounds, each log counting 48 bytes more
+	// (algod.QueryLogOverheadBytes); 0 for no limit. A request over it fails
+	// with 400 (algod.IsQueryResponseTooLarge).
 	MaxResponseBytes uint64 `json:"max-response-bytes"`
 
 	// MaxRounds is the most rounds a request may list.
