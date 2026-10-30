@@ -1,3 +1,39 @@
+# go-dtalgorand-sdk
+
+## go-algorand-sdk for time-travel algod
+
+This is go-dtalgorand-sdk, a fork of [go-algorand-sdk](https://github.com/algorand/go-algorand-sdk) v2.14.0 for a time-travel algod: [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork run with `EnableTimeTravel: true`, which keeps the state of every round since genesis. It is a drop-in replacement: it keeps the module path `github.com/algorand/go-algorand-sdk/v2`, everything in go-algorand-sdk behaves the same, and the additions are new methods. Its transaction, block and consensus types are exported from dt-algorand, so they match the node's: they lack a few consensus parameters that only upstream's future protocol sets. The main ones, all on the algod client:
+
+- **Reads at past rounds**: `.Round(r)` on account, asset, application, box and supply reads, and `GetApplicationBoxesAt`.
+- **History**: `...Versions` methods list the rounds at which an account, asset, application, box, or any of an app's boxes changed, with paging iterators and values; `Rounds(...)` gives each object as of a set of rounds, `Keys()` the state keys each version changed, and `Key()` / `Prefix()` the history of one state key or box map.
+- **Asset holders**: `GetAssetHolders` lists every holder of an asset at a round.
+- **Query**: `Query` runs read-only TEAL calls (one program or deployed app, many calls) at several rounds per request through `POST /v2/query`.
+- **Limits and detection**: `SimulateLimits`, `DTFeatures` to tell a dt-algorand node that serves past rounds from stock algod, `SupportsAssetHolders`, and a `DTUnsupportedError` when a node has a feature off, so code can fall back.
+- **Errors and headers**: `IsNodeBusy`, `RetryAfter`, `IsTimeLimitExceeded`, `IsHistoryUnavailable` and more; `common.WithResponseInfo` and `ParseEffort` for response headers such as `X-Algod-Effort`.
+
+See **[DTALGOSDK.md](DTALGOSDK.md)** for the details and examples. Source and issues: [d13co/go-dtalgorand-sdk](https://github.com/d13co/go-dtalgorand-sdk) (branch `dtalgorand`).
+
+### Using go-dtalgorand-sdk in place of go-algorand-sdk
+
+Keep your imports, and replace the module in your `go.mod` (pin an exact `v*-dt.*` version):
+
+```sh
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.3.0.0.1
+go mod tidy
+```
+
+```go
+client, _ := algod.MakeClient("http://localhost:8080", token)
+acct, err := client.AccountInformation(addr).Round(50_000_000).Do(ctx)
+for v, err := range client.ApplicationVersions(appID).Keys().All(ctx) {
+	// ...
+}
+```
+
+The rest of this README is go-algorand-sdk's.
+
+---
+
 # go-algorand-sdk
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/algorand/go-algorand-sdk)](https://goreportcard.com/report/github.com/algorand/go-algorand-sdk/v2)
