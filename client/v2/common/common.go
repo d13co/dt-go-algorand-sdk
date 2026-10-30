@@ -119,6 +119,7 @@ func mergeRawQueries(q1, q2 string) string {
 
 // submitFormRaw is a helper used for submitting (ex.) GETs and POSTs to the server
 func (client *Client) submitFormRaw(ctx context.Context, path string, params interface{}, requestMethod string, encodeJSON bool, headers []*Header, body interface{}) (resp *http.Response, err error) {
+	info := resetResponseInfo(ctx)
 	queryURL := client.serverURL
 	queryURL.Path += path
 
@@ -167,6 +168,9 @@ func (client *Client) submitFormRaw(ctx context.Context, path string, params int
 	httpClient := &http.Client{Transport: client.transport}
 	req = req.WithContext(ctx)
 	resp, err = httpClient.Do(req)
+	if err == nil {
+		info.fill(resp)
+	}
 
 	if err != nil {
 		select {
