@@ -234,7 +234,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 ## Versions of this module
 
-Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
+Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0. `x.y.z` is this SDK's own version: bump `x` for breaking changes, `y` for features and `z` for fixes. It never resets when the go-algorand-sdk version or the dt-algorand release changes: after `v2.14.0-dt.4.1.0.0`, a fix is `v2.14.0-dt.4.1.0.1`, and moving to dt5 with new features is `v2.14.0-dt.5.1.1.0`.
 
 The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
 
