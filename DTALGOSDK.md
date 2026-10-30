@@ -1,10 +1,10 @@
 # go-dtalgorand-sdk
 
-go-dtalgorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork whose time-travel ledger (`EnableTimeTravel: true`) keeps the state of every round since genesis. It is the Go counterpart of [dtalgosdk](https://github.com/d13co/dt-js-algorand-sdk).
+go-dtalgorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork whose time-travel ledger (`EnableTimeTravel: true`) keeps the state of every round since genesis. It is the Go counterpart of the JS SDK [dt-algosdk](https://www.npmjs.com/package/dt-algosdk) ([source](https://github.com/d13co/dt-js-algorand-sdk/tree/dtalgorand)).
 
 It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's.
 
-It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dtalgosdk does: older builds, which lack the capabilities endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#capabilities-and-detecting-the-node).
+It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older builds, which lack the capabilities endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#capabilities-and-detecting-the-node).
 
 - [Installing](#installing)
 - [Reads at past rounds](#reads-at-past-rounds)
@@ -234,7 +234,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 ## Versions of this module
 
-Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dtalgosdk. For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
+Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0 for that pair. Bump `x` for breaking changes, `y` for features and `z` for fixes, and go back to 0.0.1 when either of the first two parts changes.
 
 The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
 
