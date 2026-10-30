@@ -234,9 +234,9 @@ func (tx *Transaction) Rekey(rekeyToAddress string) error {
 	return nil
 }
 
-// PQScheme is a 2-byte ASCII identifier of an account authorization scheme.
-// Conventionally, the first byte identifies the DSA family, and the second
-// identifies the version or variant.
+// PQScheme is a 2-byte ASCII identifier of a post-quantum account authorization scheme.
+// Conventionally, the first byte is the PQ-DSA family, and the second byte is a version
+// or variant identifier.
 //
 //msgp:test ignore PQScheme
 type PQScheme [2]byte
