@@ -40,8 +40,10 @@ type QueryRequest struct {
 	// QueryLimits.MaxCallBudget; 0 for that maximum.
 	Budget uint64 `json:"budget,omitempty"`
 
-	// Calls lists the calls. Each runs alone at each round, on the state the
-	// round left: the writes of one call are not seen by the others.
+	// Calls lists the calls, at most QueryLimits.MaxCalls, and at most
+	// QueryLimits.MaxTotalCalls divided by len(Rounds) (1 when empty). Each
+	// runs alone at each round, on the state the round left: the writes of one
+	// call are not seen by the others.
 	Calls []QueryCall `json:"calls"`
 
 	// ClearProgram is the clear state program of Program; optional.
@@ -64,7 +66,7 @@ type QueryRequest struct {
 
 	// Rounds lists the rounds to run the calls at, as of the end of each round;
 	// 0 is the latest round. Empty: the latest round. Duplicates count toward
-	// QueryLimits.MaxRounds.
+	// QueryLimits.MaxRounds and MaxTotalCalls.
 	Rounds []uint64 `json:"rounds,omitempty"`
 
 	// Sender is the calls' sender; the queried round's fee sink if empty.
@@ -196,6 +198,14 @@ type QueryLimits struct {
 
 	// MaxRounds is the most rounds a request may list.
 	MaxRounds uint64 `json:"max-rounds"`
+
+	// MaxTotalCalls is the most calls times listed rounds a request may ask
+	// for, duplicate rounds included and no rounds counting as 1; at most
+	// MaxCalls * MaxRounds. Split requests by it as well as by MaxCalls and
+	// MaxRounds. Nodes from before this limit don't report it;
+	// Capabilities().Do (and so DTFeatures) then sets it to
+	// MaxCalls * MaxRounds, which a plain json.Unmarshal of the body doesn't.
+	MaxTotalCalls uint64 `json:"max-total-calls"`
 }
 
 // SimulateProtocolOverride says which consensus protocol a query round ran

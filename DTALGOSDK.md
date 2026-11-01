@@ -143,6 +143,7 @@ for _, round := range res.Rounds {
 
 - The body is sent as JSON, so the node's decoding errors name the field at fault.
 - A request body is at most `MaxQueryRequestBytes`.
+- A request holds at most `QueryLimits.MaxCalls` calls and lists at most `MaxRounds` rounds, and its calls times its rounds (1 with no rounds) are at most `MaxTotalCalls`: 1,024 by default, so 1,024 calls at one round or 64 at 16 rounds. The client doesn't split requests: take `min(MaxRounds, MaxTotalCalls)` rounds per request, then `min(MaxCalls, MaxTotalCalls / rounds)` calls, with `rounds` that request's own count (the last one may be shorter). Duplicate rounds count, and `Capabilities` fills in `MaxCalls * MaxRounds` for nodes that don't report the total.
 - Results are limited by `QueryLimits.MaxResponseBytes`, where each log counts `QueryLogOverheadBytes` extra. Split a request that gets `IsQueryResponseTooLarge`.
 - Stock algod (404), or a node with queries disabled, gives a `*DTUnsupportedError`.
 

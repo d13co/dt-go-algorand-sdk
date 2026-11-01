@@ -559,6 +559,7 @@ func TestQueryErrors(t *testing.T) {
 		{404, "Not Found", true},
 		{400, "query is disabled on this node (MaxAPIQueryCalls is 0)", true},
 		{400, "too many calls: got 9, the limit is 8", false},
+		{400, "too many calls in total: 64 calls at 16 rounds is 1024, the limit is 512 (MaxAPIQueryTotalCalls)", false},
 		{503, "operation not available during catchup", false},
 	}
 	for _, tc := range cases {
@@ -601,7 +602,26 @@ func TestDTFeatures(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, f.Capabilities.Query)
 	assert.Equal(t, uint64(64), f.Capabilities.Query.MaxCalls)
+	assert.Equal(t, uint64(64*16), f.Capabilities.Query.MaxTotalCalls, "a node without max-total-calls: calls x rounds")
 	assert.True(t, f.Capabilities.DeveloperApi)
+
+	// A node that reports max-total-calls.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-rounds":0,"max-extra-opcode-budget":320000,"resource-limit-multiplier":1},"query":{"max-calls":1024,"max-rounds":16,"max-total-calls":1024,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+	})
+	f, err = c.DTFeatures(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, f.Capabilities.Query)
+	assert.Equal(t, uint64(1024), f.Capabilities.Query.MaxTotalCalls)
+
+	// A reported 0 is taken as absent.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-rounds":0,"max-extra-opcode-budget":320000,"resource-limit-multiplier":1},"query":{"max-calls":64,"max-rounds":16,"max-total-calls":0,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+	})
+	caps, err := c.Capabilities().Do(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, caps.Query)
+	assert.Equal(t, uint64(64*16), caps.Query.MaxTotalCalls)
 
 	// Stock algod.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) })

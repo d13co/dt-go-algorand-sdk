@@ -6,6 +6,7 @@ package algod
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
@@ -74,6 +75,15 @@ func (s *Capabilities) Do(ctx context.Context, headers ...*common.Header) (respo
 	})
 	if hasStatus(err, http.StatusNotFound, nil) {
 		err = unsupported("GET /v2/capabilities", "the node is stock algod", err)
+	}
+	// 0 or absent: a node from before the limit, whose only limits are calls
+	// and rounds. Saturates rather than wrapping on a nonsense response.
+	if q := response.Query; err == nil && q != nil && q.MaxTotalCalls == 0 {
+		if q.MaxRounds != 0 && q.MaxCalls > math.MaxUint64/q.MaxRounds {
+			q.MaxTotalCalls = math.MaxUint64
+		} else {
+			q.MaxTotalCalls = q.MaxCalls * q.MaxRounds
+		}
 	}
 	return
 }
