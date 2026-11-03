@@ -144,6 +144,7 @@ for _, round := range res.Rounds {
 - The body is sent as JSON, so the node's decoding errors name the field at fault.
 - A request body is at most `MaxQueryRequestBytes`.
 - A request holds at most `QueryLimits.MaxCalls` calls and lists at most `MaxRounds` rounds, and its calls times its rounds (1 with no rounds) are at most `MaxTotalCalls`: 1,024 by default, so 1,024 calls at one round or 64 at 16 rounds. The client doesn't split requests: take `min(MaxRounds, MaxTotalCalls)` rounds per request, then `min(MaxCalls, MaxTotalCalls / rounds)` calls, with `rounds` that request's own count (the last one may be shorter). Duplicate rounds count, and `Capabilities` fills in `MaxCalls * MaxRounds` for nodes that don't report the total.
+- `Protocol` runs each round under a later consensus protocol, as if an upgrade to it took effect right after the round: `latest` (the default), a version string or `vNN`, `round` for the protocol the block after the round really ran, or `future` with the developer API. Each round's `Protocol` (`*QueryProtocolOverride`) says how it applied: `Notes` lists how the two protocols differ, such as `semantics-changed` or data the chain never recorded under the old protocol, and each note's `Hits` lists the calls that ran into it. An unknown name, or `future` without the developer API, fails the request with 400; a protocol not later than the one a round's next block ran gives that round an `Error`.
 - Results are limited by `QueryLimits.MaxResponseBytes`, where each log counts `QueryLogOverheadBytes` extra. Split a request that gets `IsQueryResponseTooLarge`.
 - Stock algod (404), or a node with queries disabled, gives a `*DTUnsupportedError`.
 
@@ -169,7 +170,7 @@ default: // past rounds, no queries
 
 The fork's simulate takes several transaction groups per request: put them in upstream's `SimulateRequest.TxnGroups`. They run in sequence in one block, up to `CapabilitiesResponse.Simulate.MaxTxnGroups`. `Round` reaches back to genesis on a time-travel node.
 
-The fork's other simulate options (`rounds`, `parallel-groups`, the validity window modes, `protocol`) are not in this SDK. The fork plans to move them to `/v2/query`.
+dt-algorand dt5 removed the fork's other simulate options (`rounds`, `parallel-groups`, the validity window modes, `protocol`), which this SDK never sent: use `Query` for calls at several rounds or under a later protocol. A node answers a simulate request that sets one of them with a 400 that names it. dt5 also keeps `allow-unnamed-resources` within the consensus limits. A dt4 node with `SimulateResourceLimitMultiplier` above 1 may report unnamed resources that a group you can submit can't hold, and this SDK no longer reads that factor: a dt4 node's `simulate.max-rounds` and `simulate.resource-limit-multiplier` capabilities are ignored.
 
 ## Errors
 
