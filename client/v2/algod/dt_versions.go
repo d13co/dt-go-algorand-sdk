@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: the /versions endpoints of a
+// This file is part of dt-go-algorand-sdk: the /versions endpoints of a
 // time-travel algod, which list the rounds at which an object changed, or
 // with Rounds, the object as of each of a list of rounds.
 

@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// This file is part of go-dtalgorand-sdk, the time-travel fork of the SDK. It
+// This file is part of dt-go-algorand-sdk, the time-travel fork of the SDK. It
 // adds an opt-in way to see the status and headers of a response, which the
 // upstream methods do not return.
 

@@ -1,6 +1,6 @@
 package models
 
-// This file is part of go-dtalgorand-sdk: the models of the asset holders,
+// This file is part of dt-go-algorand-sdk: the models of the asset holders,
 // query and capabilities endpoints of a time-travel algod.
 
 // AssetHoldersResponse is a page of the accounts that hold an asset.

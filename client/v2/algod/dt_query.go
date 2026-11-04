@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: POST /v2/query, the node's
+// This file is part of dt-go-algorand-sdk: POST /v2/query, the node's
 // capabilities, and the DTFeatures probe.
 
 import (

@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: reads at a past round. Round(r) on
+// This file is part of dt-go-algorand-sdk: reads at a past round. Round(r) on
 // an upstream request returns a request of the same name with "At" appended,
 // which sends round=r. The node marks every answer it gives as of round r
 // with the X-Algod-TT-Round header, and the SDK requires it: stock algod

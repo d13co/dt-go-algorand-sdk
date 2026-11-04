@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: the X-Algod-Effort header.
+// This file is part of dt-go-algorand-sdk: the X-Algod-Effort header.
 
 import (
 	"net/http"

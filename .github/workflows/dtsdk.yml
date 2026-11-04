@@ -1,7 +1,7 @@
-name: go-dtalgorand-sdk
+name: dt-go-algorand-sdk
 
-# CI for the dtalgorand branch of go-dtalgorand-sdk. Pushing a v<version> tag
-# (v2.14.0-dt.4.1.0.0) on dtalgorand tests it and creates its GitHub release;
+# CI for the dtalgorand branch of dt-go-algorand-sdk. Pushing a v<version> tag
+# (v2.14.0-dt.5.1.0.0) on dtalgorand tests it and creates its GitHub release;
 # the Go module proxy serves the tag itself. See "Releasing" in DTALGOSDK.md.
 on:
   push:
@@ -94,4 +94,4 @@ jobs:
             fi
           } > notes.md
           gh release create "$GITHUB_REF_NAME" --verify-tag --latest --prerelease=false \
-            --title "go-dtalgorand-sdk ${GITHUB_REF_NAME#v}" --notes-file notes.md
+            --title "dt-go-algorand-sdk ${GITHUB_REF_NAME#v}" --notes-file notes.md

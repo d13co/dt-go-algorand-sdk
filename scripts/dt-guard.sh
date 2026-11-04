@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# go-dtalgorand-sdk: checks that the fork's changes to upstream code stay
+# dt-go-algorand-sdk: checks that the fork's changes to upstream code stay
 # small, so that upstream releases merge cleanly. Fork code lives in dt_*.go
 # files; the only other files the fork may change are listed below, plus the
 # types that go-algorand's scripts/export_sdk_types.py exports from

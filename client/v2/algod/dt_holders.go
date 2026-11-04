@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: the asset holders listing of a
+// This file is part of dt-go-algorand-sdk: the asset holders listing of a
 // time-travel algod.
 
 import (

@@ -1,6 +1,6 @@
 package models
 
-// This file is part of go-dtalgorand-sdk: the responses of the /versions
+// This file is part of dt-go-algorand-sdk: the responses of the /versions
 // endpoints of a time-travel algod. Unlike the generated models, fields that
 // the node may leave out where zero means something else are pointers.
 

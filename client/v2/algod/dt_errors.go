@@ -1,6 +1,6 @@
 package algod
 
-// This file is part of go-dtalgorand-sdk: the errors of the time-travel
+// This file is part of dt-go-algorand-sdk: the errors of the time-travel
 // methods, and helpers that classify any algod error.
 
 import (

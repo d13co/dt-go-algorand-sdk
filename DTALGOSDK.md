@@ -1,6 +1,6 @@
-# go-dtalgorand-sdk
+# dt-go-algorand-sdk
 
-go-dtalgorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork whose time-travel ledger (`EnableTimeTravel: true`) keeps the state of every round since genesis. It is the Go counterpart of the JS SDK [dt-algosdk](https://www.npmjs.com/package/dt-algosdk) ([source](https://github.com/d13co/dt-js-algorand-sdk/tree/dtalgorand)).
+dt-go-algorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork whose time-travel ledger (`EnableTimeTravel: true`) keeps the state of every round since genesis. It is the Go counterpart of the JS SDK [dt-algosdk](https://www.npmjs.com/package/dt-algosdk) ([source](https://github.com/d13co/dt-js-algorand-sdk/tree/dtalgorand)).
 
 It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's.
 
@@ -25,11 +25,11 @@ It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older b
 Replace the module in your `go.mod`, keeping your imports:
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@v2.14.0-dt.4.1.0.0
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@v2.14.0-dt.5.1.0.0
 go mod tidy
 ```
 
-That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/go-dtalgorand-sdk/v2 v2.14.0-dt.4.1.0.0`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
+That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/dt-go-algorand-sdk/v2 v2.14.0-dt.5.1.0.0`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
 
 What to know about `replace`:
 
@@ -37,7 +37,7 @@ What to know about `replace`:
 - **It works in the main module only.** A library that calls the fork's methods forces every program that uses it to add the same `replace`.
 - **`go install tool@version` refuses modules whose `go.mod` has a `replace`.** Build tools that use the fork from a clone, or ship binaries.
 - **It overrides the version the other dependencies ask for.** A dependency that needs go-algorand-sdk APIs newer than the fork's base won't compile until the fork merges that release.
-- **Pin a version.** A branch works for trying out unreleased changes: `go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/go-dtalgorand-sdk/v2@dtalgorand && go mod tidy` resolves it to a pseudo-version in `go.mod`.
+- **Pin a version.** A branch works for trying out unreleased changes: `go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@dtalgorand && go mod tidy` resolves it to a pseudo-version in `go.mod`.
 - The fork adds no dependencies to go-algorand-sdk's.
 
 ## Reads at past rounds
@@ -236,7 +236,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 ## Versions of this module
 
-Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.4.1.0.0` is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt4 (`v5.0.5-dt4`), and is this SDK's release 1.0.0. `x.y.z` is this SDK's own version: bump `x` for breaking changes, `y` for features and `z` for fixes. It never resets when the go-algorand-sdk version or the dt-algorand release changes: after `v2.14.0-dt.4.1.0.0`, a fix is `v2.14.0-dt.4.1.0.1`, and moving to dt5 with new features is `v2.14.0-dt.5.1.1.0`.
+Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.5.1.0.0`, the first release, is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt5 (`v5.0.5-dt5`), and is this SDK's release 1.0.0. `x.y.z` is this SDK's own version: bump `x` for breaking changes, `y` for features and `z` for fixes. It never resets when the go-algorand-sdk version or the dt-algorand release changes: after `v2.14.0-dt.5.1.0.0`, a fix is `v2.14.0-dt.5.1.0.1`, and moving to dt6 with new features is `v2.14.0-dt.6.1.1.0`. dt-algosdk counts its own `x.y.z`, so the two can differ for the same dt-algorand release.
 
 The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
 
