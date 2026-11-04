@@ -40,8 +40,10 @@ type QueryRequest struct {
 	// QueryLimits.MaxCallBudget; 0 for that maximum.
 	Budget uint64 `json:"budget,omitempty"`
 
-	// Calls lists the calls. Each runs alone at each round, on the state the
-	// round left: the writes of one call are not seen by the others.
+	// Calls lists the calls, at most QueryLimits.MaxCalls, and at most
+	// QueryLimits.MaxTotalCalls divided by len(Rounds) (1 when empty). Each
+	// runs alone at each round, on the state the round left: the writes of one
+	// call are not seen by the others.
 	Calls []QueryCall `json:"calls"`
 
 	// ClearProgram is the clear state program of Program; optional.
@@ -58,13 +60,13 @@ type QueryRequest struct {
 	Program []byte `json:"program,omitempty"`
 
 	// Protocol is the consensus protocol to evaluate with: "latest" (the
-	// default), "round" (each round's own), a version string or "vNN", or
-	// "future" with the developer API.
+	// default), "round" (the protocol the block after each round really ran),
+	// a version string or "vNN", or "future" with the developer API.
 	Protocol string `json:"protocol,omitempty"`
 
 	// Rounds lists the rounds to run the calls at, as of the end of each round;
 	// 0 is the latest round. Empty: the latest round. Duplicates count toward
-	// QueryLimits.MaxRounds.
+	// QueryLimits.MaxRounds and MaxTotalCalls.
 	Rounds []uint64 `json:"rounds,omitempty"`
 
 	// Sender is the calls' sender; the queried round's fee sink if empty.
@@ -107,9 +109,9 @@ type QueryRoundResult struct {
 	Error string `json:"error,omitempty"`
 
 	// Protocol says which protocol the calls ran with. It is present when the
-	// protocol differed from the round's own, or when the request named a
-	// protocol other than "round".
-	Protocol *SimulateProtocolOverride `json:"protocol,omitempty"`
+	// protocol differed from the one the block after the round really ran,
+	// or when the request named a protocol other than "round".
+	Protocol *QueryProtocolOverride `json:"protocol,omitempty"`
 
 	// Round is the round.
 	Round uint64 `json:"round"`
@@ -131,8 +133,8 @@ type QueryCallResult struct {
 // expensive requests (GET /v2/capabilities).
 type CapabilitiesResponse struct {
 	// DeveloperApi is whether the node has the developer API
-	// (EnableDeveloperAPI): simulate's exec-trace-config, and the future
-	// protocol in simulate and query.
+	// (EnableDeveloperAPI): simulate's exec-trace-config, and query's future
+	// protocol.
 	DeveloperApi bool `json:"developer-api"`
 
 	// Query holds the limits of POST /v2/query; nil when queries are disabled
@@ -143,9 +145,7 @@ type CapabilitiesResponse struct {
 	Simulate SimulateLimits `json:"simulate"`
 
 	// TimeLimitSeconds is how long an expensive request (simulate, query,
-	// deltas, versions) may run before it fails with 504; 0 for no limit. A
-	// simulate request with rounds instead gets an error for each round not
-	// finished by then.
+	// deltas, versions) may run before it fails with 504; 0 for no limit.
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
 	// TimeTravel is whether the node serves past rounds since genesis
@@ -159,16 +159,8 @@ type SimulateLimits struct {
 	// may ask for, per group.
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
 
-	// MaxRounds is the most rounds a simulate request may list; 0 when the
-	// node does not take them.
-	MaxRounds uint64 `json:"max-rounds"`
-
 	// MaxTxnGroups is the most transaction groups a simulate request may hold.
 	MaxTxnGroups uint64 `json:"max-txn-groups"`
-
-	// ResourceLimitMultiplier multiplies a simulate request's limits on
-	// unnamed resources.
-	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
 }
 
 // QueryLimits is a node's limits on POST /v2/query requests.
@@ -196,42 +188,52 @@ type QueryLimits struct {
 
 	// MaxRounds is the most rounds a request may list.
 	MaxRounds uint64 `json:"max-rounds"`
+
+	// MaxTotalCalls is the most calls times listed rounds a request may ask
+	// for, duplicate rounds included and no rounds counting as 1; at most
+	// MaxCalls * MaxRounds. Split requests by it as well as by MaxCalls and
+	// MaxRounds. Nodes from before this limit don't report it;
+	// Capabilities().Do (and so DTFeatures) then sets it to
+	// MaxCalls * MaxRounds, which a plain json.Unmarshal of the body doesn't.
+	MaxTotalCalls uint64 `json:"max-total-calls"`
 }
 
-// SimulateProtocolOverride says which consensus protocol a query round ran
-// with instead of the round's own.
-type SimulateProtocolOverride struct {
+// QueryProtocolOverride says which consensus protocol a query round ran
+// with instead of the one the block after it really ran.
+type QueryProtocolOverride struct {
 	// Applied is whether the override was applied.
 	Applied bool `json:"applied"`
 
-	// From is the round's own protocol.
+	// From is the protocol the block after the queried round really ran.
 	From string `json:"from"`
 
 	// Notes lists the differences between the protocols that the calls may
 	// have run into.
-	Notes []SimulateProtocolNote `json:"notes,omitempty"`
+	Notes []QueryProtocolNote `json:"notes,omitempty"`
 
 	// To is the protocol used.
 	To string `json:"to"`
 }
 
-// SimulateProtocolNote is a difference between two protocols.
-type SimulateProtocolNote struct {
+// QueryProtocolNote is a difference between two protocols.
+type QueryProtocolNote struct {
 	// Code names the difference, such as "semantics-changed".
 	Code string `json:"code"`
 
-	// Hits lists where the calls ran into it, if known; Group names the call.
-	Hits []SimulateProtocolNoteHit `json:"hits,omitempty"`
+	// Hits lists the calls and inner transactions that ran into it, at most
+	// 16; absent for notes about the protocol change as a whole.
+	Hits []QueryProtocolNoteHit `json:"hits,omitempty"`
 
 	// Message describes it.
 	Message string `json:"message"`
 }
 
-// SimulateProtocolNoteHit is where a call ran into a protocol difference.
-type SimulateProtocolNoteHit struct {
-	// Group is the index of the group; for a query, of the call.
+// QueryProtocolNoteHit is where a call ran into a protocol difference.
+type QueryProtocolNoteHit struct {
+	// Group is the index of the call in the request.
 	Group int `json:"group"`
 
-	// Path is the path of the transaction within it.
+	// Path is the path of the transaction in the call's group: [0] for the
+	// call, [0, i] for its inner transaction i, and so on.
 	Path []int `json:"path"`
 }

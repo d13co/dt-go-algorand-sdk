@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -514,7 +515,7 @@ type queryRequestMirror struct {
 
 func TestQuery(t *testing.T) {
 	c, s := newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, `{"last-round":10,"rounds":[{"round":0,"error":"no history"},{"round":10,"calls":[{"logs":["AQI="],"cost":5},{"logs":[],"cost":1,"error":"boom"}]}]}`)
+		reply(w, 200, `{"last-round":10,"rounds":[{"round":0,"error":"no history"},{"round":10,"calls":[{"logs":["AQI="],"cost":5},{"logs":[],"cost":1,"error":"boom"}],"protocol":{"from":"v38","to":"v41","applied":true,"notes":[{"code":"semantics-changed","message":"MaxAppProgramCost"},{"code":"block-incentive-fields","message":"no proposer","hits":[{"group":1,"path":[0,2]}]}]}}]}`)
 	})
 	req := models.QueryRequest{
 		Program:      []byte{1, 2},
@@ -548,6 +549,14 @@ func TestQuery(t *testing.T) {
 	assert.Equal(t, "no history", resp.Rounds[0].Error)
 	assert.Equal(t, [][]byte{{1, 2}}, resp.Rounds[1].Calls[0].Logs)
 	assert.Equal(t, "boom", resp.Rounds[1].Calls[1].Error)
+	assert.Nil(t, resp.Rounds[0].Protocol)
+	assert.Equal(t, &models.QueryProtocolOverride{
+		From: "v38", To: "v41", Applied: true,
+		Notes: []models.QueryProtocolNote{
+			{Code: "semantics-changed", Message: "MaxAppProgramCost"},
+			{Code: "block-incentive-fields", Message: "no proposer", Hits: []models.QueryProtocolNoteHit{{Group: 1, Path: []int{0, 2}}}},
+		},
+	}, resp.Rounds[1].Protocol)
 }
 
 func TestQueryErrors(t *testing.T) {
@@ -559,6 +568,7 @@ func TestQueryErrors(t *testing.T) {
 		{404, "Not Found", true},
 		{400, "query is disabled on this node (MaxAPIQueryCalls is 0)", true},
 		{400, "too many calls: got 9, the limit is 8", false},
+		{400, "too many calls in total: 64 calls at 16 rounds is 1024, the limit is 512 (MaxAPIQueryTotalCalls)", false},
 		{503, "operation not available during catchup", false},
 	}
 	for _, tc := range cases {
@@ -577,31 +587,77 @@ func TestQueryErrors(t *testing.T) {
 
 func TestDTFeatures(t *testing.T) {
 	ctx := context.Background()
+	want := models.CapabilitiesResponse{
+		TimeTravel:       true,
+		TimeLimitSeconds: 9,
+		Simulate:         models.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320000},
+	}
 	// A current fork node.
 	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v2/capabilities", r.URL.Path)
-		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":9,"simulate":{"max-txn-groups":16,"max-rounds":4,"max-extra-opcode-budget":320000,"resource-limit-multiplier":2}}`)
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":9,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000}}`)
 	})
 	f, err := c.DTFeatures(ctx)
 	require.NoError(t, err)
 	assert.True(t, f.Supported)
 	require.NotNil(t, f.Capabilities)
-	assert.Equal(t, models.CapabilitiesResponse{
-		TimeTravel:       true,
-		TimeLimitSeconds: 9,
-		Simulate:         models.SimulateLimits{MaxTxnGroups: 16, MaxRounds: 4, MaxExtraOpcodeBudget: 320000, ResourceLimitMultiplier: 2},
-	}, *f.Capabilities)
+	assert.Equal(t, want, *f.Capabilities)
 	assert.Nil(t, f.Capabilities.Query, "queries disabled")
+
+	// A dt4 node still reports the simulate limits dt5 dropped: ignored.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":9,"simulate":{"max-txn-groups":16,"max-rounds":4,"max-extra-opcode-budget":320000,"resource-limit-multiplier":2}}`)
+	})
+	f, err = c.DTFeatures(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, f.Capabilities)
+	assert.Equal(t, want, *f.Capabilities)
 
 	// Queries on.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
-		reply(w, 200, `{"time-travel":true,"developer-api":true,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-rounds":0,"max-extra-opcode-budget":320000,"resource-limit-multiplier":1},"query":{"max-calls":64,"max-rounds":16,"max-call-budget":700000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":1000000}}`)
+		reply(w, 200, `{"time-travel":true,"developer-api":true,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000},"query":{"max-calls":64,"max-rounds":16,"max-call-budget":700000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":1000000}}`)
 	})
 	f, err = c.DTFeatures(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, f.Capabilities.Query)
 	assert.Equal(t, uint64(64), f.Capabilities.Query.MaxCalls)
+	assert.Equal(t, uint64(64*16), f.Capabilities.Query.MaxTotalCalls, "a node without max-total-calls: calls x rounds")
 	assert.True(t, f.Capabilities.DeveloperApi)
+
+	// A node that reports max-total-calls.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000},"query":{"max-calls":1024,"max-rounds":16,"max-total-calls":1024,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+	})
+	f, err = c.DTFeatures(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, f.Capabilities.Query)
+	assert.Equal(t, uint64(1024), f.Capabilities.Query.MaxTotalCalls)
+
+	// A reported 0 is taken as absent.
+	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000},"query":{"max-calls":64,"max-rounds":16,"max-total-calls":0,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+	})
+	caps, err := c.Capabilities().Do(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, caps.Query)
+	assert.Equal(t, uint64(64*16), caps.Query.MaxTotalCalls)
+
+	// Nonsense limits: rounds count at least 1, and the product saturates.
+	for _, tc := range []struct {
+		query string
+		want  uint64
+	}{
+		{`"max-calls":64,"max-rounds":0`, 64},
+		{`"max-calls":18446744073709551615,"max-rounds":2`, math.MaxUint64},
+	} {
+		c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+			reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000},"query":{`+tc.query+`,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+		})
+		caps, err = c.Capabilities().Do(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, caps.Query)
+		assert.Equal(t, tc.want, caps.Query.MaxTotalCalls, tc.query)
+	}
 
 	// Stock algod.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) })
