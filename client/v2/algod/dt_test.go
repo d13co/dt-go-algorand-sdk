@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -640,6 +641,23 @@ func TestDTFeatures(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, caps.Query)
 	assert.Equal(t, uint64(64*16), caps.Query.MaxTotalCalls)
+
+	// Nonsense limits: rounds count at least 1, and the product saturates.
+	for _, tc := range []struct {
+		query string
+		want  uint64
+	}{
+		{`"max-calls":64,"max-rounds":0`, 64},
+		{`"max-calls":18446744073709551615,"max-rounds":2`, math.MaxUint64},
+	} {
+		c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) {
+			reply(w, 200, `{"time-travel":true,"developer-api":false,"time-limit-seconds":0,"simulate":{"max-txn-groups":16,"max-extra-opcode-budget":320000},"query":{`+tc.query+`,"max-call-budget":320000,"max-call-log-bytes":0,"max-call-state-bytes":0,"max-response-bytes":0}}`)
+		})
+		caps, err = c.Capabilities().Do(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, caps.Query)
+		assert.Equal(t, tc.want, caps.Query.MaxTotalCalls, tc.query)
+	}
 
 	// Stock algod.
 	c, _ = newStub(t, func(w http.ResponseWriter, r *http.Request) { reply(w, 404, `{"message":"Not Found"}`) })

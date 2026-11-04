@@ -223,6 +223,23 @@ func TestLiveTimeTravel(t *testing.T) {
 		assert.Equal(t, res.Rounds[1], res.Rounds[2])
 		require.NotNil(t, res.Rounds[1].Protocol, "the default protocol is latest")
 		assert.True(t, res.Rounds[1].Protocol.Applied)
+
+		// One call too many at the most rounds: over the total, not unsupported.
+		q := f.Capabilities.Query
+		assert.LessOrEqual(t, q.MaxCalls, q.MaxTotalCalls)
+		assert.LessOrEqual(t, q.MaxTotalCalls, q.MaxCalls*max(1, q.MaxRounds))
+		rounds := make([]uint64, max(1, q.MaxRounds))
+		for i := range rounds {
+			rounds[i] = livePast
+		}
+		_, err = c.Query(models.QueryRequest{
+			Program: program,
+			Calls:   make([]models.QueryCall, q.MaxTotalCalls/uint64(len(rounds))+1),
+			Rounds:  rounds,
+		}).Do(ctx)
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrDTUnsupported), err)
+		assert.Contains(t, err.Error(), "in total")
 	})
 
 	t.Run("holders", func(t *testing.T) {

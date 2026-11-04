@@ -77,12 +77,14 @@ func (s *Capabilities) Do(ctx context.Context, headers ...*common.Header) (respo
 		err = unsupported("GET /v2/capabilities", "the node is stock algod", err)
 	}
 	// 0 or absent: a node from before the limit, whose only limits are calls
-	// and rounds. Saturates rather than wrapping on a nonsense response.
+	// and rounds. Rounds count at least 1, as on the node, and the product
+	// saturates rather than wrapping on a nonsense response.
 	if q := response.Query; err == nil && q != nil && q.MaxTotalCalls == 0 {
-		if q.MaxRounds != 0 && q.MaxCalls > math.MaxUint64/q.MaxRounds {
+		rounds := max(1, q.MaxRounds)
+		if q.MaxCalls > math.MaxUint64/rounds {
 			q.MaxTotalCalls = math.MaxUint64
 		} else {
-			q.MaxTotalCalls = q.MaxCalls * q.MaxRounds
+			q.MaxTotalCalls = q.MaxCalls * rounds
 		}
 	}
 	return
