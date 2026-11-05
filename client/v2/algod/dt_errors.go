@@ -9,11 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/common"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/internal/dtnode"
 )
 
 // ErrDTUnsupported matches (with errors.Is) every DTUnsupportedError.
@@ -115,16 +114,15 @@ func hasStatus(err error, status int, re *regexp.Regexp) bool {
 }
 
 // The node's error messages the helpers match, named by their server
-// constants (go-algorand dtalgorand): errBusy (request_limits.go),
-// errOperationNotAvailableDuringCatchup, timetravel.ErrNoBoxIndex,
-// timetravel.ErrNoHoldersIndex, ledger.ErrHistoryUntrusted,
-// errReevalBusy (ledger.ErrReevalBusy), ledger.ErrRoundTooLarge,
+// constants (go-algorand dtalgorand): errOperationNotAvailableDuringCatchup,
+// ledger.ErrRoundTooLarge,
 // ledger.ErrTooManyVersionObjects, simulation.ErrQueryResponseTooLarge,
-// ledger.ErrOnlineStakeUnavailable, and the handlers' own messages.
+// ledger.ErrOnlineStakeUnavailable, and the handlers' own messages. The
+// busy and history messages are in dtnode, which the retry policy shares.
 var (
-	reNodeBusy      = regexp.MustCompile(`node is busy|every slot for re-evaluating old rounds is in use`)
+	reNodeBusy      = dtnode.NodeBusy
 	reCatchup       = regexp.MustCompile(`not available during catchup`)
-	reHistory       = regexp.MustCompile(`box index is incomplete|asset holders index is not complete|history is not served`)
+	reHistory       = dtnode.History
 	reRoundTooLarge = regexp.MustCompile(`one round of boxes is too large|too many objects to merge`)
 	reQueryTooLarge = regexp.MustCompile(`query response too large`)
 	reOnlineStake   = regexp.MustCompile(`does not record this online stake`)
@@ -140,10 +138,17 @@ var (
 // IsNodeBusy reports whether err is the node's 503 "the node is busy", from
 // its limit on concurrent simulate and query requests, or "every slot for
 // re-evaluating old rounds is in use", from its limit on rebuilding old
-// deltas. Retry after a
-// moment (RetryAfter), or on another node. Other 503s mean something else
+// deltas. Retry after a moment (RetryAfter, or 1 s without it), or on another
+// node; common.RetryTransport does. Other 503s mean something else
 // (IsCatchingUp, IsHistoryUnavailable).
 func IsNodeBusy(err error) bool { return hasStatus(err, http.StatusServiceUnavailable, reNodeBusy) }
+
+// IsTooManyRequests reports whether err is a 429: the node's limit on
+// requests in flight (RestConnectionsSoftLimit), or a proxy's rate limit.
+// dt-algorand's has an empty body and Retry-After: 1; stock algod's has no
+// Retry-After. Retry after RetryAfter, or 1 s without it, or on another
+// node; common.RetryTransport does.
+func IsTooManyRequests(err error) bool { return hasStatus(err, http.StatusTooManyRequests, nil) }
 
 // IsCatchingUp reports whether err is a 503 from a node in catchpoint catchup,
 // which can't serve the request until the catchup ends.
@@ -190,7 +195,8 @@ func IsOnlineStakeNotRecorded(err error) bool {
 }
 
 // RetryAfter returns how long an error response's Retry-After header says to
-// wait, given in seconds or as an HTTP date (0 if already past). It needs the
+// wait, given in seconds or as an HTTP date (0 if already past, else rounded
+// up to the second). It needs the
 // headers: errors of the time-travel methods carry them (common.ResponseError);
 // for upstream methods it returns false.
 func RetryAfter(err error) (time.Duration, bool) {
@@ -198,22 +204,7 @@ func RetryAfter(err error) (time.Duration, bool) {
 	if !errors.As(err, &httpErr) || httpErr.Header == nil {
 		return 0, false
 	}
-	value := strings.TrimSpace(httpErr.Header.Get("Retry-After"))
-	if value == "" {
-		return 0, false
-	}
-	if secs, err := strconv.ParseUint(value, 10, 32); err == nil {
-		return time.Duration(secs) * time.Second, true
-	}
-	at, err := http.ParseTime(value)
-	if err != nil {
-		return 0, false
-	}
-	wait := time.Until(at)
-	if wait < 0 {
-		wait = 0
-	}
-	return wait.Round(time.Second), true
+	return dtnode.ParseRetryAfter(httpErr.Header.Get("Retry-After"), time.Now())
 }
 
 // isRouteMissing reports whether err is the 400 a node without the

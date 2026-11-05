@@ -851,3 +851,57 @@ func TestStatusCodeOfUpstreamErrors(t *testing.T) {
 		assert.Equal(t, code, got)
 	}
 }
+
+func TestTooManyRequests(t *testing.T) {
+	// dt-algorand's connection limit: an empty body and Retry-After: 1.
+	c, _ := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	_, err := c.Query(models.QueryRequest{AppId: 1}).Do(context.Background())
+	assert.True(t, IsTooManyRequests(err))
+	assert.False(t, IsNodeBusy(err))
+	wait, ok := RetryAfter(err)
+	assert.True(t, ok)
+	assert.Equal(t, time.Second, wait)
+
+	// Upstream methods: no headers, but the status is there.
+	_, err = c.Status().Do(context.Background())
+	assert.True(t, IsTooManyRequests(err))
+	assert.True(t, IsTooManyRequests(fmt.Errorf("wrapped: %w", upstreamErr(429, ""))))
+	assert.False(t, IsTooManyRequests(upstreamErr(503, `{"message":"the node is busy"}`)))
+	assert.False(t, IsTooManyRequests(errors.New("dial tcp: connection refused")))
+}
+
+func TestRetryTransportUnderAlgod(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			reply(w, 503, `{"message":"the node is busy: try again later or on another node"}`)
+		default:
+			reply(w, 200, `{"last-round":7}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	var waits []common.RetryWait
+	rt := &common.RetryTransport{Policy: &common.RetryPolicy{
+		Sleep:  func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+		OnWait: func(w common.RetryWait) { waits = append(waits, w) },
+	}}
+	c, err := MakeClientWithTransport(server.URL, "", nil, rt)
+	require.NoError(t, err)
+	status, err := c.Status().Do(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, uint64(7), status.LastRound)
+	assert.Equal(t, 3, calls)
+	require.Len(t, waits, 2)
+	assert.Equal(t, common.RetryRateLimited, waits[0].Reason)
+	assert.True(t, IsTooManyRequests(waits[0].Err))
+	assert.True(t, IsNodeBusy(waits[1].Err), "the helpers read the errors OnWait gets")
+	assert.Equal(t, "The node is busy: retrying in 2 s (retry 2 of 4)", common.FormatRetryWait(waits[1]))
+}

@@ -14,6 +14,7 @@ It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older b
 - [Capabilities and detecting the node](#capabilities-and-detecting-the-node)
 - [Simulate](#simulate)
 - [Errors](#errors)
+- [Retries](#retries)
 - [Response headers and effort](#response-headers-and-effort)
 - [Stock algod](#stock-algod)
 - [Server behaviour changes](#server-behaviour-changes)
@@ -25,11 +26,11 @@ It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older b
 Replace the module in your `go.mod`, keeping your imports:
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@v2.14.0-dt.5.1.0.0
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@v2.14.0-dt.5.1.1.0
 go mod tidy
 ```
 
-That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/dt-go-algorand-sdk/v2 v2.14.0-dt.5.1.0.0`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
+That leaves `go.mod` with your `require github.com/algorand/go-algorand-sdk/v2 ...` and a line `replace github.com/algorand/go-algorand-sdk/v2 => github.com/d13co/dt-go-algorand-sdk/v2 v2.14.0-dt.5.1.1.0`. Your code and every dependency that imports go-algorand-sdk then build against the fork.
 
 What to know about `replace`:
 
@@ -177,7 +178,8 @@ dt-algorand dt5 removed the fork's other simulate options (`rounds`, `parallel-g
 | Helper | True for |
 |---|---|
 | `errors.Is(err, algod.ErrDTUnsupported)` | a node without the feature (see each section) |
-| `IsNodeBusy` | 503 "the node is busy" (simulate, query) or "every slot for re-evaluating old rounds is in use" (deltas): retry after `RetryAfter`, or on another node |
+| `IsNodeBusy` | 503 "the node is busy" (simulate, query) or "every slot for re-evaluating old rounds is in use" (deltas): retry after `RetryAfter` (1 s without it), or on another node |
+| `IsTooManyRequests` | 429: the node's limit on requests in flight (`RestConnectionsSoftLimit`, default 1024), or a proxy's rate limit. dt-algorand's has an empty body and `Retry-After: 1`; stock algod's has no `Retry-After`. Retry after `RetryAfter` (1 s without it), or on another node |
 | `IsCatchingUp` | 503 during catchpoint catchup |
 | `IsHistoryUnavailable` | 503 for history the node can't serve now: box index or holders index incomplete, or history not served |
 | `IsTimeLimitExceeded` | 504: the request ran past the node's time limit; split it |
@@ -190,6 +192,84 @@ dt-algorand dt5 removed the fork's other simulate options (`rounds`, `parallel-g
 - The helpers work on errors from every method. They read the status from a `*common.ResponseError`, or else from the `common.HTTPError` (or `BadRequest`, `InvalidToken`, `NotFound`, `InternalError`) that upstream returns for every error response.
 - Errors of the fork's methods are `*common.ResponseError` values with the response's status and headers. They wrap upstream's error, so `errors.As` still finds a `common.NotFound`, and their message is upstream's.
 - `RetryAfter` needs those headers, so it returns false for upstream methods. For those, read the header with `WithResponseInfo` (below).
+
+## Retries
+
+The clients don't retry, as in go-algorand-sdk. `common.RetryTransport` is an `http.RoundTripper` that retries by the policy below, the same as dt-algosdk's `withRetry` ([its Retries section](https://github.com/d13co/dt-js-algorand-sdk/blob/dtalgorand/DTALGOSDK.md#retries)). Pass it to `MakeClientWithTransport` (algod or indexer):
+
+```go
+client, err := algod.MakeClientWithTransport(address, token, nil, &common.RetryTransport{
+	Policy: &common.RetryPolicy{
+		// tell users while a request waits
+		OnWait: func(w common.RetryWait) { log.Print(common.FormatRetryWait(w)) },
+	},
+})
+```
+
+`Base` is the transport that sends the requests (`http.DefaultTransport` if nil), and a nil `Policy` is the default one. A `RetryTransport` whose `Base` is another `RetryTransport` leaves the retries to the inner one, so requests are not retried twice over.
+
+### The policy
+
+A failed request (a status of 400 or more, or a transport error) is decided in this order:
+
+| # | Error | Decision |
+|---|---|---|
+| 1 | the request's context is done | give up (`RetryAborted`) |
+| 2 | 503 history unavailable (`IsHistoryUnavailable`) | give up (`RetryHistoryUnavailable`) |
+| 3 | 504 from a request under the node's time limit (`common.IsTimeLimitedRequest`) | give up (`RetryTimeLimit`): split or narrow it |
+| 4 | a status not in `RetryStatuses` (408, 429, 500, 502, 503, 504), or an error that is no network error | give up (`RetryNotRetryable`) |
+| 5 | a transaction submit (`common.IsNonIdempotentRequest`) that the node may have taken | give up (`RetryNotIdempotent`) |
+| 6 | `MaxTries` tries made (5) | give up (`RetryMaxTries`) |
+| 7 | `Retry-After` above `MaxRetryAfter` (30 s) | give up (`RetryAfterTooLong`) |
+| 8 | otherwise | retry: `RetryRateLimited` (429), `RetryNodeBusy` (busy 503), `RetryServerError`, `RetryNetwork` |
+
+The requests under the node's time limit are `POST /v2/query`, `POST /v2/transactions/simulate`, `GET /v2/deltas/{round}`, and `GET` of a `/versions` or `/holders` listing under `/v2/` (not `GET /versions`, algod's version): a retry would repeat all the work and run into the limit again.
+
+A transaction submit (`POST /v2/transactions` and `/v2/transactions/async`) is retried only when the node surely did not take it: a 429, a busy 503, or a connection refused or never made (a dial error: refused, DNS, unreachable network or host, dial timeout). After a lost answer (a reset connection, an EOF, a 502), a retry would get "transaction already in ledger" instead of the transaction ID: check for the transaction instead.
+
+Network errors are dial and DNS errors, `*net.OpError`, EOFs, reset connections and broken pipes, net/http's dropped connections (a keep-alive connection the server closed, an HTTP/2 GOAWAY or stream reset), and timeouts (`net.Error` with `Timeout()`, such as `Dialer.Timeout` or `ResponseHeaderTimeout`). Certificate and TLS errors, a bad address or port, a bare context error, and errors of the client itself (a `*url.Error` is judged by its cause) are not.
+
+The wait before a retry is the longest of:
+
+- the backoff: 0 before the first retry, then 2, 4, 8 s, at most `MaxBackoff` (10 s);
+- the node's `Retry-After`, read on 429s and 503s only, up to `MaxRetryAfter` (30 s); an HTTP date is rounded up to the second, as in dt-algosdk;
+- `BusyMinDelay` (1 s) for a 429 or a busy 503 without `Retry-After` (or with `Retry-After: 0`), or a refused connection: above `RestConnectionsHardLimit` (2048) the node refuses connections.
+
+The wait ends at once when the request's context is done, and the request returns the context's error. When it gives up, it returns the last try's response or error itself, so the client returns the error it would without retries, and the error helpers work on it as usual. Request bodies are replayed with `Request.GetBody`, which the clients set; a request with a body and no `GetBody` is not retried.
+
+A transport only sees a response up to its headers: the client reads a successful response's body after `RoundTrip` returns. So a connection that fails while a 2xx body downloads (a large versions page or block) returns the error to the caller, where dt-algosdk, which reads the body inside its retries, retries it. Error bodies are read inside `RoundTrip` (up to 64 KiB, to decide) and handed back whole.
+
+### Changing it
+
+`common.RetryPolicy` fields left at their zero value take their defaults (`common.DefaultRetryPolicy()`). A negative duration means none, and a negative `MaxTries` means 1. This differs from dt-algosdk when porting a config: there `maxTries: 0` means 1 (no retries), here `MaxTries: 0` means the default 5, so write 1 to turn retries off. An empty `RetryStatuses` list retries no status in both.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `MaxTries` | 5 | tries in all, the first included; 1 turns retries off. Not even `Decide` retries past it |
+| `MaxBackoff` | 10 s | the longest backoff |
+| `MaxRetryAfter` | 30 s | the longest `Retry-After` honoured; a longer one gives up at once |
+| `BusyMinDelay` | 1 s | the least wait for a 429 or a busy 503 without `Retry-After` (or with 0), or a refused connection |
+| `Backoff(retry)` | `common.DefaultBackoff`: 0, 2, 4, 8 s, ... | the backoff before retry `retry` (from 1), before `MaxBackoff` caps it |
+| `RetryStatuses` | 408, 429, 500, 502, 503, 504 | the statuses that may be retried; a non-nil empty list retries none |
+| `Decide(err, rc, decision)` | | returns the decision to follow instead of the policy's own, within `MaxTries`; a panic in it (or in `Backoff`) reaches the caller |
+| `OnWait(wait)` | | called before every retry; see below |
+| `Sleep(ctx, d)` | a timer and `ctx.Done()` | how to wait |
+
+`policy.Decision(err, rc)` gives the decision for one error: a `*common.ResponseError` or `common.HTTPError` (what the clients return), or a transport error. A nil policy is the default one.
+
+### Telling users
+
+`OnWait(wait)` is called before every retry, those with no wait included, with a `common.RetryWait`:
+
+- `Reason`: `RetryRateLimited`, `RetryNodeBusy`, `RetryServerError` or `RetryNetwork`;
+- `Delay`, and `Until`;
+- `RetryAfter`, when the node sent `Retry-After` (`HasRetryAfter`);
+- `Retry` (from 1) and `MaxRetries`;
+- `Method`, `Path`, `Status` (0 if there was no response) and `Err`, a `*common.ResponseError` for an error response.
+
+`common.FormatRetryWait(wait)` makes a message of it, such as "The node is rate limiting requests: retrying in 1 s (retry 1 of 4)", the same as dt-algosdk's. The wait is already in the transport's `Waits()` when `OnWait` runs, if it waits at all. A panic in `OnWait` is recovered and ignored, and it may run on several goroutines at once.
+
+To poll instead, `Waits()` returns the requests waiting now, one each, soonest first (a retry with no wait is never in it), and `Waiting()` the one that waits longest. `CloseIdleConnections` reaches `Base`.
 
 ## Response headers and effort
 
@@ -232,6 +312,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 - `GET /v2/deltas/{round}` rebuilds old rounds, and can answer 503 with `Retry-After` when busy, or 504 at the time limit.
 - `GET /v2/deltas/{round}` answers 500 when rebuilding an old round fails, where upstream answers 404.
 - `POST /v2/participation/generate/{address}` answers 400 on MainNet, TestNet and BetaNet unless the node sets `DangerouslyEnableParticipation`: the fork is not audited for running validators.
+- Above `RestConnectionsSoftLimit` (1024) requests in flight, the node answers 429 (`IsTooManyRequests`), with `Retry-After: 1` and CORS headers from `v5.0.5-dt5`; above `RestConnectionsHardLimit` (2048) it refuses connections. `RetryTransport` retries both.
 - Simulate and query requests share a node-wide concurrency limit (`SimulateParallelism`), and delta rebuilds have two slots of their own: a request that can't start within 250 ms gets a 503 with `Retry-After: 1` (`IsNodeBusy`).
 
 ## Versions of this module
@@ -259,7 +340,7 @@ Never move or delete a pushed tag: the module proxy and checksum database keep t
 ## Developing
 
 - **Fork code** goes in `dt_*.go` files. Besides the types exported from dt-algorand, the only upstream code the fork edits is a hook in `client/v2/common/common.go` `submitFormRaw`, for `ResponseInfo`. `./scripts/dt-guard.sh` checks this, and that every upstream workflow only runs in upstream's repository. The fork's CI is `.github/workflows/dtsdk.yml`.
-- **Unit tests:** `go test ./client/...`. The fork's are in `client/v2/algod/dt_test.go` and `client/v2/common/dt_response_test.go`, against stub servers.
+- **Unit tests:** `go test ./client/...`. The fork's are in `client/v2/algod/dt_test.go`, `client/v2/common/dt_response_test.go` and `client/v2/common/dt_retry_test.go`, against stub servers.
 - **Cucumber unit tests:** fetch algorand-sdk-testing's features at the commit CI pins (`SDK_TESTING_COMMIT` in dtsdk.yml), then run `make unit`. Later commits can add scenarios the SDK doesn't implement yet. `test-harness.sh` ignores an `INSTALL_ONLY` set in the environment and starts a Docker sandbox:
 
   ```sh

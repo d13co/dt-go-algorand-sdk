@@ -9,7 +9,8 @@ This is dt-go-algorand-sdk, a fork of [go-algorand-sdk](https://github.com/algor
 - **Asset holders**: `GetAssetHolders` lists every holder of an asset at a round.
 - **Query**: `Query` runs read-only TEAL calls (one program or deployed app, many calls) at several rounds per request through `POST /v2/query`.
 - **Capabilities and detection**: `Capabilities` (`GET /v2/capabilities`: what the node serves and its limits), `DTFeatures` to tell a dt-algorand node that serves past rounds from stock algod, `SupportsAssetHolders`, and a `DTUnsupportedError` when a node has a feature off, so code can fall back.
-- **Errors and headers**: `IsNodeBusy`, `RetryAfter`, `IsTimeLimitExceeded`, `IsHistoryUnavailable` and more; `common.WithResponseInfo`, `ParseEffort` and `ParseTTRound` for response headers such as `X-Algod-Effort`.
+- **Retries**: `common.RetryTransport`, an opt-in `http.RoundTripper` that retries busy nodes, rate limits and network errors by the same policy as dt-algosdk, with an `OnWait` callback to tell users.
+- **Errors and headers**: `IsNodeBusy`, `IsTooManyRequests`, `RetryAfter`, `IsTimeLimitExceeded`, `IsHistoryUnavailable` and more; `common.WithResponseInfo`, `ParseEffort` and `ParseTTRound` for response headers such as `X-Algod-Effort`.
 
 See **[DTALGOSDK.md](DTALGOSDK.md)** for the details and examples. Source and issues: [d13co/dt-go-algorand-sdk](https://github.com/d13co/dt-go-algorand-sdk) (branch `dtalgorand`).
 
@@ -18,7 +19,7 @@ See **[DTALGOSDK.md](DTALGOSDK.md)** for the details and examples. Source and is
 Keep your imports, and replace the module in your `go.mod` (pin an exact `v*-dt.*` version):
 
 ```sh
-go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@v2.14.0-dt.5.1.0.0
+go mod edit -replace=github.com/algorand/go-algorand-sdk/v2=github.com/d13co/dt-go-algorand-sdk/v2@v2.14.0-dt.5.1.1.0
 go mod tidy
 ```
 
