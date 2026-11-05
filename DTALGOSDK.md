@@ -223,11 +223,11 @@ A failed request (a status of 400 or more, or a transport error) is decided in t
 | 7 | `Retry-After` above `MaxRetryAfter` (30 s) | give up (`RetryAfterTooLong`) |
 | 8 | otherwise | retry: `RetryRateLimited` (429), `RetryNodeBusy` (busy 503), `RetryServerError`, `RetryNetwork` |
 
-The requests under the node's time limit are `POST /v2/query`, `POST /v2/transactions/simulate`, `GET /v2/deltas/{round}`, and `GET` of a `/versions` or `/holders` listing: a retry would repeat all the work and run into the limit again.
+The requests under the node's time limit are `POST /v2/query`, `POST /v2/transactions/simulate`, `GET /v2/deltas/{round}`, and `GET` of a `/versions` or `/holders` listing under `/v2/` (not `GET /versions`, algod's version): a retry would repeat all the work and run into the limit again.
 
 A transaction submit (`POST /v2/transactions` and `/v2/transactions/async`) is retried only when the node surely did not take it: a 429, a busy 503, or a connection refused or never made (a dial error: refused, DNS, unreachable network or host, dial timeout). After a lost answer (a reset connection, an EOF, a 502), a retry would get "transaction already in ledger" instead of the transaction ID: check for the transaction instead.
 
-Network errors are dial and DNS errors, `*net.OpError`, EOFs, reset connections and timeouts (`net.Error`, such as `Dialer.Timeout` or `ResponseHeaderTimeout`). Certificate and TLS errors, a bare context error, and errors of the client itself (a `*url.Error` is judged by its cause) are not.
+Network errors are dial and DNS errors, `*net.OpError`, EOFs, reset connections and broken pipes, net/http's dropped connections (a keep-alive connection the server closed, an HTTP/2 GOAWAY or stream reset), and timeouts (`net.Error` with `Timeout()`, such as `Dialer.Timeout` or `ResponseHeaderTimeout`). Certificate and TLS errors, a bad address or port, a bare context error, and errors of the client itself (a `*url.Error` is judged by its cause) are not.
 
 The wait before a retry is the longest of:
 
@@ -236,6 +236,8 @@ The wait before a retry is the longest of:
 - `BusyMinDelay` (1 s) for a 429 or a busy 503 without `Retry-After` (or with `Retry-After: 0`), or a refused connection: above `RestConnectionsHardLimit` (2048) the node refuses connections.
 
 The wait ends at once when the request's context is done, and the request returns the context's error. When it gives up, it returns the last try's response or error itself, so the client returns the error it would without retries, and the error helpers work on it as usual. Request bodies are replayed with `Request.GetBody`, which the clients set; a request with a body and no `GetBody` is not retried.
+
+A transport only sees a response up to its headers: the client reads a successful response's body after `RoundTrip` returns. So a connection that fails while a 2xx body downloads (a large versions page or block) returns the error to the caller, where dt-algosdk, which reads the body inside its retries, retries it. Error bodies are read inside `RoundTrip` (up to 64 KiB, to decide) and handed back whole.
 
 ### Changing it
 
@@ -249,7 +251,7 @@ The wait ends at once when the request's context is done, and the request return
 | `BusyMinDelay` | 1 s | the least wait for a 429 or a busy 503 without `Retry-After` (or with 0), or a refused connection |
 | `Backoff(retry)` | `common.DefaultBackoff`: 0, 2, 4, 8 s, ... | the backoff before retry `retry` (from 1), before `MaxBackoff` caps it |
 | `RetryStatuses` | 408, 429, 500, 502, 503, 504 | the statuses that may be retried; a non-nil empty list retries none |
-| `Decide(err, rc, decision)` | | returns the decision to follow instead of the policy's own, within `MaxTries` |
+| `Decide(err, rc, decision)` | | returns the decision to follow instead of the policy's own, within `MaxTries`; a panic in it (or in `Backoff`) reaches the caller |
 | `OnWait(wait)` | | called before every retry; see below |
 | `Sleep(ctx, d)` | a timer and `ctx.Done()` | how to wait |
 
@@ -265,9 +267,9 @@ The wait ends at once when the request's context is done, and the request return
 - `Retry` (from 1) and `MaxRetries`;
 - `Method`, `Path`, `Status` (0 if there was no response) and `Err`, a `*common.ResponseError` for an error response.
 
-`common.FormatRetryWait(wait)` makes a message of it, such as "The node is rate limiting requests: retrying in 1 s (retry 1 of 4)", the same as dt-algosdk's. The wait is already in the transport's `Waits()` when `OnWait` runs. A panic in `OnWait` is recovered and ignored, and it may run on several goroutines at once.
+`common.FormatRetryWait(wait)` makes a message of it, such as "The node is rate limiting requests: retrying in 1 s (retry 1 of 4)", the same as dt-algosdk's. The wait is already in the transport's `Waits()` when `OnWait` runs, if it waits at all. A panic in `OnWait` is recovered and ignored, and it may run on several goroutines at once.
 
-To poll instead, `Waits()` returns the requests waiting now, one each, and `Waiting()` the one that waits longest.
+To poll instead, `Waits()` returns the requests waiting now, one each, soonest first (a retry with no wait is never in it), and `Waiting()` the one that waits longest. `CloseIdleConnections` reaches `Base`.
 
 ## Response headers and effort
 

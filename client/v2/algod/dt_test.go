@@ -854,7 +854,7 @@ func TestStatusCodeOfUpstreamErrors(t *testing.T) {
 
 func TestTooManyRequests(t *testing.T) {
 	// dt-algorand's connection limit: an empty body and Retry-After: 1.
-	c, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+	c, _ := newStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
@@ -875,7 +875,7 @@ func TestTooManyRequests(t *testing.T) {
 
 func TestRetryTransportUnderAlgod(t *testing.T) {
 	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		switch calls {
 		case 1:
@@ -890,7 +890,7 @@ func TestRetryTransportUnderAlgod(t *testing.T) {
 	t.Cleanup(server.Close)
 	var waits []common.RetryWait
 	rt := &common.RetryTransport{Policy: &common.RetryPolicy{
-		Sleep:  func(ctx context.Context, d time.Duration) error { return ctx.Err() },
+		Sleep:  func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
 		OnWait: func(w common.RetryWait) { waits = append(waits, w) },
 	}}
 	c, err := MakeClientWithTransport(server.URL, "", nil, rt)

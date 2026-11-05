@@ -147,6 +147,11 @@ func TestRetryDecision(t *testing.T) {
 		}
 		assert.Equal(t, RetryServerError, decide(respErr(504, "", nil), get(1), nil).Reason)
 		assert.Equal(t, RetryServerError, decide(respErr(503, "", nil), rc(1, "POST", "/v2/query"), nil).Reason)
+		// algod's own version endpoint is no listing: its 504 is retried
+		assert.False(t, IsTimeLimitedRequest("GET", "/versions"))
+		assert.False(t, IsTimeLimitedRequest("GET", "/algod/versions"))
+		assert.Equal(t, RetryServerError, decide(respErr(504, "", nil), rc(1, "GET", "/versions"), nil).Reason)
+		assert.True(t, IsTimeLimitedRequest("GET", "/algod/v2/accounts/X/versions"))
 		assert.False(t, IsTimeLimitedRequest("GET", "/v2/query"))
 		assert.False(t, IsTimeLimitedRequest("GET", "/v2/deltas/txn/group/abc"))
 	})
@@ -287,6 +292,7 @@ type scripted struct {
 	steps  []step
 	calls  []string
 	bodies []string
+	closed int
 }
 
 func (s *scripted) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -309,7 +315,18 @@ func (s *scripted) RoundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range next.header {
 		h.Set(k, v)
 	}
-	return &http.Response{StatusCode: next.status, Header: h, Body: io.NopCloser(strings.NewReader(next.body)), Request: req}, nil
+	body := closeFunc{strings.NewReader(next.body), func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.closed++
+	}}
+	return &http.Response{StatusCode: next.status, Header: h, Body: body, Request: req}, nil
+}
+
+func (s *scripted) closes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *scripted) count() int {
@@ -354,6 +371,7 @@ func TestRetryTransport(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 200, resp.StatusCode)
 		assert.Equal(t, 4, base.count())
+		assert.Equal(t, 3, base.closes(), "every discarded try's response is closed")
 		s := time.Second
 		assert.Equal(t, []time.Duration{s, 2 * s, 4 * s}, waits)
 		require.Len(t, seen, 3)
@@ -397,7 +415,9 @@ func TestRetryTransport(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		assert.Equal(t, big, string(body))
+		assert.Equal(t, 1, base.closes(), "only the first try's response is closed by the transport")
 		require.NoError(t, resp.Body.Close())
+		assert.Equal(t, 2, base.closes())
 		assert.Equal(t, 2, base.count())
 	})
 
@@ -627,9 +647,12 @@ func TestFormatRetryWait(t *testing.T) {
 	assert.Equal(t, "Could not reach the node: retrying in 3 s (retry 1 of 4)", FormatRetryWait(w))
 	w.Delay = time.Millisecond
 	assert.Equal(t, "Could not reach the node: retrying in 1 s (retry 1 of 4)", FormatRetryWait(w))
+	w = base
+	w.Reason, w.Status = RetryReason("custom"), 418
+	assert.Equal(t, "The request failed: retrying in 3 s (retry 1 of 4)", FormatRetryWait(w))
 }
 
-func TestRetryReviewFixes(t *testing.T) {
+func TestRetryTransportEdges(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("retries real timeouts, and a dial timeout as never sent", func(t *testing.T) {
@@ -655,7 +678,7 @@ func TestRetryReviewFixes(t *testing.T) {
 
 	t.Run("retries a response header timeout, but not for a submit", func(t *testing.T) {
 		release := make(chan struct{})
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			select {
 			case <-release:
 			case <-r.Context().Done():
@@ -777,11 +800,99 @@ func TestRetryReviewFixes(t *testing.T) {
 		assert.Equal(t, RetryAfterTooLong, decide(farDate, get(1), nil).Reason)
 	})
 
+	t.Run("retries net/http's dropped connections, but not a submit", func(t *testing.T) {
+		for _, err := range []error{
+			errors.New("http: server closed idle connection"),
+			errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=1, ErrCode=NO_ERROR, debug=\"\""),
+			errors.New("stream error: stream ID 3; INTERNAL_ERROR; received from peer"),
+			&url.Error{Op: "Post", URL: "http://x", Err: errors.New("http: server closed idle connection")},
+		} {
+			assert.Equal(t, RetryNetwork, decide(err, rc(1, "POST", "/v2/query"), nil).Reason, "%v", err)
+			assert.Equal(t, RetryNotIdempotent, decide(err, rc(1, "POST", "/v2/transactions"), nil).Reason, "%v", err)
+		}
+	})
+
+	t.Run("does not retry a bad address", func(t *testing.T) {
+		for _, err := range []error{
+			&net.OpError{Op: "dial", Net: "tcp", Err: &net.AddrError{Err: "invalid port", Addr: "99999"}},
+			&net.OpError{Op: "dial", Net: "tcp", Err: &net.ParseError{Type: "IP address", Text: "x"}},
+			&net.OpError{Op: "dial", Net: "tcpx", Err: net.UnknownNetworkError("tcpx")},
+			&net.OpError{Op: "dial", Net: "tcp", Err: net.InvalidAddrError("bad")},
+		} {
+			assert.Equal(t, RetryNotRetryable, decide(err, get(1), nil).Reason, "%v", err)
+		}
+		var seen []RetryWait
+		rt := &RetryTransport{Policy: &RetryPolicy{MaxTries: 3, OnWait: func(w RetryWait) { seen = append(seen, w) }}}
+		req, err := http.NewRequest("POST", "http://127.0.0.1:99999/v2/transactions", strings.NewReader("x"))
+		require.NoError(t, err)
+		_, err = rt.RoundTrip(req)
+		require.Error(t, err)
+		assert.Empty(t, seen, "%v", err)
+		assert.Equal(t, RetryNotRetryable, decide(&url.Error{Op: "Get", URL: "x", Err: errors.New("x")}, get(1), nil).Reason)
+	})
+
+	t.Run("takes a nil response body", func(t *testing.T) {
+		calls := 0
+		base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return &http.Response{StatusCode: 503, Header: http.Header{}, Request: req}, nil
+			}
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: http.NoBody, Request: req}, nil
+		})
+		var waits []time.Duration
+		client := &http.Client{Transport: &RetryTransport{Base: base, Policy: &RetryPolicy{Sleep: recordingSleep(&waits)}}}
+		resp, err := client.Get("http://node/v2/status")
+		require.NoError(t, err)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("closes the response when Decide panics", func(t *testing.T) {
+		base := &scripted{steps: []step{busyStep}}
+		rt := &RetryTransport{Base: base, Policy: &RetryPolicy{Decide: func(error, RetryContext, RetryDecision) RetryDecision { panic("broken decide") }}}
+		assert.Panics(t, func() { _, _ = send(ctx, t, rt, "GET", "/v2/status", "") })
+		assert.Equal(t, 1, base.closes())
+	})
+
+	t.Run("forwards CloseIdleConnections", func(t *testing.T) {
+		base := &idleCloser{}
+		client := &http.Client{Transport: &RetryTransport{Base: base}}
+		client.CloseIdleConnections()
+		assert.Equal(t, 1, base.closed)
+		(&RetryTransport{Base: &scripted{}}).CloseIdleConnections()
+	})
+
+	t.Run("lists the waits soonest first", func(t *testing.T) {
+		rt := &RetryTransport{}
+		now := time.Now()
+		late := &RetryWait{Until: now.Add(time.Hour), Retry: 2}
+		soon := &RetryWait{Until: now.Add(time.Second), Retry: 1}
+		rt.track(late, true)
+		rt.track(soon, true)
+		waits := rt.Waits()
+		require.Len(t, waits, 2)
+		assert.Equal(t, []int{1, 2}, []int{waits[0].Retry, waits[1].Retry})
+		latest, _ := rt.Waiting()
+		assert.Equal(t, 2, latest.Retry)
+	})
+
 	t.Run("formats a rate limit", func(t *testing.T) {
 		w := RetryWait{Reason: RetryRateLimited, Status: 429, Delay: time.Second, Retry: 2, MaxRetries: 4}
 		assert.Equal(t, "The node is rate limiting requests: retrying in 1 s (retry 2 of 4)", FormatRetryWait(w))
 	})
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type idleCloser struct {
+	scripted
+	closed int
+}
+
+func (c *idleCloser) CloseIdleConnections() { c.closed++ }
 
 type closeFunc struct {
 	io.Reader

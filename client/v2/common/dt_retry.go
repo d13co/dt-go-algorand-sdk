@@ -139,10 +139,13 @@ type RetryPolicy struct {
 	RetryStatuses []int
 	// Decide overrides any decision. It gets the error, the request and the
 	// policy's own decision, and returns the one to follow, within MaxTries.
+	// A panic in it, or in Backoff, reaches the caller, as an exception
+	// decide throws does in dt-algosdk.
 	Decide func(err error, rc RetryContext, decision RetryDecision) RetryDecision
 	// OnWait is called before every retry, those with no wait included, to
 	// tell the app that a request is rate limited, waiting for a busy node,
-	// or retrying. The wait is already in RetryTransport.Waits. A panic in it
+	// or retrying. The wait is already in RetryTransport.Waits, if it waits
+	// at all. A panic in it
 	// is recovered and ignored. It may be called from several goroutines at
 	// once.
 	OnWait func(wait RetryWait)
@@ -214,9 +217,9 @@ func (p *RetryPolicy) resolved() RetryPolicy {
 	return r
 }
 
-var (
-	reTimeLimited = regexp.MustCompile(`/(versions|holders)$|/v2/deltas/\d+$`)
-)
+// reTimeLimited matches the time-limited GETs, after any prefix: a listing
+// under /v2/ (not algod's own GET /versions) and /v2/deltas/{round}.
+var reTimeLimited = regexp.MustCompile(`/v2/.+/(versions|holders)$|/v2/deltas/\d+$`)
 
 func trimPath(path string) string {
 	if i := strings.IndexAny(path, "?#"); i >= 0 {
@@ -228,7 +231,8 @@ func trimPath(path string) string {
 // IsTimeLimitedRequest reports whether a request runs under the node's time
 // limit, so a 504 means it ran too long and a retry would do the same: POST
 // /v2/query, POST /v2/transactions/simulate, GET /v2/deltas/{round}, and GET
-// of a /versions or /holders listing. Split or narrow it instead. The path
+// of a /versions or /holders listing (not GET /versions, algod's version).
+// Split or narrow it instead. The path
 // may have a prefix, such as a proxy's.
 func IsTimeLimitedRequest(method, path string) bool {
 	p := trimPath(path)
@@ -289,9 +293,9 @@ const wsaeconnrefused = syscall.Errno(10061)
 
 // classifyNetwork reports whether err is a network error that may be retried,
 // whether the request surely never reached the node (the connection was
-// never made), and whether the connection was refused. Timeouts are network
-// errors; certificate and TLS errors, a bare context error, and errors of the
-// client itself are not. A *url.Error, which http.Client returns, is
+// never made), and whether the connection was refused. Timeouts and dropped
+// connections are network errors; certificate and TLS errors, a bad address,
+// a bare context error, and errors of the client itself are not. A *url.Error, which http.Client returns, is
 // classified by its cause.
 func classifyNetwork(err error) (network, notSent, refused bool) {
 	var urlErr *url.Error
@@ -320,6 +324,16 @@ func classifyNetwork(err error) (network, notSent, refused bool) {
 	}
 	// Checked before the context errors: Go's network timeouts match
 	// context.DeadlineExceeded too.
+	// A bad address or network fails the same way every time
+	var (
+		addrErr    *net.AddrError
+		parseErr   *net.ParseError
+		unknownNet net.UnknownNetworkError
+		invalid    net.InvalidAddrError
+	)
+	if errors.As(err, &addrErr) || errors.As(err, &parseErr) || errors.As(err, &unknownNet) || errors.As(err, &invalid) {
+		return false, false, false
+	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		switch opErr.Op {
@@ -338,14 +352,26 @@ func classifyNetwork(err error) (network, notSent, refused bool) {
 		return false, false, false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) ||
+		isDroppedConnection(err) {
 		return true, false, refused
 	}
 	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true, false, refused
 	}
 	return false, false, false
+}
+
+// isDroppedConnection reports whether err is net/http's own error for a
+// connection the server dropped, which it doesn't export: a request written
+// onto a keep-alive connection the server had just closed, or an HTTP/2
+// GOAWAY or stream reset. The request may have reached the node.
+func isDroppedConnection(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "http: server closed idle connection") ||
+		strings.Contains(msg, "http2: server sent GOAWAY") ||
+		strings.Contains(msg, "stream error: stream ID")
 }
 
 func giveUp(reason RetryReason, retryAfter time.Duration, has bool) RetryDecision {
@@ -482,12 +508,16 @@ var waitReasons = map[RetryReason]string{
 // as dt-algosdk's formatRetryWait.
 func FormatRetryWait(wait RetryWait) string {
 	what, ok := waitReasons[wait.Reason]
-	if !ok {
+	switch {
+	case wait.Reason == RetryServerError:
 		status := "an error"
 		if wait.Status != 0 {
 			status = fmt.Sprint(wait.Status)
 		}
 		what = "The node answered " + status
+	case !ok:
+		// A reason Decide made up
+		what = "The request failed"
 	}
 	when := "retrying now"
 	if seconds := int64(math.Ceil(max(0, wait.Delay).Seconds())); seconds > 0 {
@@ -526,7 +556,8 @@ type RetryTransport struct {
 	active map[*RetryWait]struct{}
 }
 
-// Waits returns the requests waiting to be retried now, one each.
+// Waits returns the requests waiting to be retried now, one each, the one
+// that retries soonest first. A retry with no wait is never in it.
 func (t *RetryTransport) Waits() []RetryWait {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -534,7 +565,20 @@ func (t *RetryTransport) Waits() []RetryWait {
 	for w := range t.active {
 		waits = append(waits, *w)
 	}
+	slices.SortFunc(waits, func(a, b RetryWait) int { return a.Until.Compare(b.Until) })
 	return waits
+}
+
+// CloseIdleConnections closes the idle connections of Base, if it has any,
+// so that http.Client.CloseIdleConnections reaches it.
+func (t *RetryTransport) CloseIdleConnections() {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if closer, ok := base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 // Waiting returns, of the requests waiting now, the one that waits longest.
@@ -601,6 +645,9 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if resp.StatusCode < 400 {
 				return resp, nil
 			}
+			if resp.Body == nil {
+				resp.Body = http.NoBody
+			}
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 			resp.Body = readBody{io.MultiReader(bytes.NewReader(body), resp.Body), resp.Body}
 			failure = &ResponseError{
@@ -610,7 +657,7 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 		}
 		rc := RetryContext{Context: ctx, Method: req.Method, Path: req.URL.Path, Tries: tries}
-		decision := policy.decide(failure, rc)
+		decision := decideOrClose(&policy, failure, rc, resp)
 		if !decision.Retry || tries >= policy.MaxTries {
 			return resp, err
 		}
@@ -645,6 +692,20 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		try = next
 	}
+}
+
+// decideOrClose decides on a failed try, closing its response if Decide or
+// Backoff panics.
+func decideOrClose(policy *RetryPolicy, err error, rc RetryContext, resp *http.Response) RetryDecision {
+	done := false
+	defer func() {
+		if !done && resp != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	decision := policy.decide(err, rc)
+	done = true
+	return decision
 }
 
 // wait tells OnWait and sleeps before a retry. Unless it returns nil, as on a
