@@ -7,6 +7,14 @@ type ApplicationStateOperation struct {
 	// local state.
 	Account string `json:"account,omitempty"`
 
+	// AppId the application whose state the operation changed: the running one,
+	// unless a foreign box opcode (app_box_*) changes another application's
+	// boxes. Only from a dt-algorand node asked with
+	// SimulateTraceConfig.StateChangeAppId, and always in the traces of
+	// algod.Client.GetTxnStateChangesForRound; 0 otherwise. dt-go-algorand-sdk:
+	// not in upstream's spec, keep it when regenerating.
+	AppId uint64 `json:"app-id,omitempty"`
+
 	// AppStateType type of application state. Value `g` is **global state**, `l` is
 	// **local state**, `b` is **boxes**.
 	AppStateType string `json:"app-state-type"`

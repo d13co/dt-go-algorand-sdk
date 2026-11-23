@@ -16,6 +16,10 @@ allowed=(
   DTALGOSDK.md
   README.md
   client/v2/common/common.go
+  # Fields of dt-algorand's simulate traces, not in upstream's spec: keep them
+  # when regenerating the models.
+  client/v2/common/models/application_state_operation.go
+  client/v2/common/models/simulate_trace_config.go
   scripts/dt-guard.sh
   # Exported from dt-algorand by its scripts/export_sdk_types.py.
   protocol/config/config.go
@@ -57,6 +61,38 @@ if ! grep -q 'info := resetResponseInfo(ctx)' client/v2/common/common.go; then
   echo "dt-guard: the ResponseInfo hook is missing from client/v2/common/common.go" >&2
   fail=1
 fi
+
+# The generated simulate models differ from upstream only by their fork
+# fields: added comment lines and these declarations, nothing removed.
+for f in client/v2/common/models/application_state_operation.go client/v2/common/models/simulate_trace_config.go; do
+  case "$f" in
+    *application_state_operation.go) field='AppId uint64 `json:"app-id,omitempty"`' ;;
+    *simulate_trace_config.go) field='StateChangeAppId bool `json:"state-change-app-id,omitempty"`' ;;
+  esac
+  if ! grep -qF "$field" "$f"; then
+    echo "dt-guard: $f lacks its fork field: $field" >&2
+    fail=1
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      '+++ '* | '--- '*) ;;
+      -*)
+        echo "dt-guard: $f removes upstream's line: ${line#-}" >&2
+        fail=1
+        ;;
+      +*)
+        added=$(printf '%s' "${line#+}" | sed -E 's/^[[:space:]]+//')
+        case "$added" in
+          '' | '//'* | "$field") ;;
+          *)
+            echo "dt-guard: $f adds a line other than its fork field: $added" >&2
+            fail=1
+            ;;
+        esac
+        ;;
+    esac
+  done < <(git diff -U0 "$base" -- "$f")
+done
 
 if [ "$fail" = 0 ]; then
   echo "dt-guard: ok"
