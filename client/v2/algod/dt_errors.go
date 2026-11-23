@@ -29,6 +29,9 @@ var ErrDTUnsupported = errors.New("the node does not support this time-travel re
 //   - has no versions or holders endpoints (time travel off, or stock
 //     algod), or the holders index off;
 //   - has no query endpoint (404) or queries disabled;
+//   - has no state changes endpoint (time travel off, stock algod, or a
+//     dt-algorand node before dt6), rejected an include value, or ignored
+//     the group values or trace;
 //   - has no capabilities endpoint (stock algod).
 //
 // Older dt-algorand builds are not supported.

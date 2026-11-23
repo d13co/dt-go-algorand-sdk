@@ -2,15 +2,16 @@
 
 dt-go-algorand-sdk is go-algorand-sdk for [dt-algorand](https://github.com/d13co/dt-algorand/tree/dtalgorand), the go-algorand fork whose time-travel ledger (`EnableTimeTravel: true`) keeps the state of every round since genesis. It is the Go counterpart of the JS SDK [dt-algosdk](https://www.npmjs.com/package/dt-algosdk) ([source](https://github.com/d13co/dt-js-algorand-sdk/tree/dtalgorand)).
 
-It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's.
+It is a drop-in replacement. It keeps the module path `github.com/algorand/go-algorand-sdk/v2`, and every upstream method, type, wire format and error stays as it is. The fork only adds methods, types and helpers, in `dt_*.go` files next to upstream's, plus two fields of upstream's generated simulate models.
 
-It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older builds, which lack the capabilities endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#capabilities-and-detecting-the-node).
+It targets dt-algorand dt4 (`v5.0.5-dt4`) and later, as dt-algosdk does: older builds, which lack the capabilities endpoint, some versions options or the `X-Algod-TT-Round` header, are not supported. The state changes of a round and simulate's `StateChangeAppId` need dt6 (`v5.1.1-dt6`). Reads at a round tell stock algod by its answers; to choose a code path beforehand, use [`DTFeatures`](#capabilities-and-detecting-the-node).
 
 - [Installing](#installing)
 - [Reads at past rounds](#reads-at-past-rounds)
 - [Versions](#versions)
 - [Asset holders](#asset-holders)
 - [Query](#query)
+- [State changes of a round](#state-changes-of-a-round)
 - [Capabilities and detecting the node](#capabilities-and-detecting-the-node)
 - [Simulate](#simulate)
 - [Errors](#errors)
@@ -149,6 +150,90 @@ for _, round := range res.Rounds {
 - Results are limited by `QueryLimits.MaxResponseBytes`, where each log counts `QueryLogOverheadBytes` extra. Split a request that gets `IsQueryResponseTooLarge`.
 - Stock algod (404), or a node with queries disabled, gives a `*DTUnsupportedError`.
 
+## State changes of a round
+
+`GetTxnStateChangesForRound(round)` (`GET /v2/deltas/{round}/txn/state-changes`) lists the app state changes of each transaction of a round that changed any, top-level and inner, in execution order: globals, local states and boxes, each with its app and its value before and after the transaction. It needs a dt6 node with time travel; `SupportsStateChanges(ctx)` tells beforehand.
+
+```go
+res, err := client.GetTxnStateChangesForRound(50_000_000).Txids(groupTxids).Do(ctx)
+for _, txn := range res.Txns {
+	for _, c := range txn.Changes {
+		fmt.Println(txn.Path, c.AppId, c.AppStateType, c.Key, c.Before, c.After)
+	}
+}
+```
+
+- `App(id)`: only that app's changes in `Txns` (0 sends no filter).
+- `Txid(id)`, `Txids(ids)`: only these top-level transactions and their inner transactions. Pass all of a group's txids in one call: `Txids` is sent as one comma-separated parameter, as the node requires, and replaces any list set before. The two combine.
+- `Include(...)`: also list what each group changed (`IncludeAccounts`, `IncludeAssets`, `IncludeApps`), each program run's budget (`IncludeBudget`), the app state each transaction read (`IncludeReads`), and one group's traces (`IncludeTrace`). `Include` replaces the list set before; `Full()` adds the three group values and `Trace(txid)` adds `trace` and sets `Txid`.
+- An empty `Txids` or `Include`, a malformed txid or an unknown include value makes `Do` fail without sending. So does `trace` without exactly one distinct transaction.
+- The request is msgpack. The response's `Round` is checked against the round asked for; the answer has no `X-Algod-TT-Round`, as the round is in the path.
+
+A `TxnStateChanges` has `Path` (the index in the block's payset, then the index among the parent's inner transactions at each level, across all its submits), `Txid` (top-level transactions only) and `Changes`, in the order the transaction first changed each key. An `AppStateChange` has `AppId`, `AppStateType` (`g`, `l` or `b`), `Account` (for local state), `Key` (the state key or box name), and `Before` and `After`, `*StateChangeValue`s (`Type` 1 bytes or 2 uint). A nil `Before` means the key did not exist; a nil `After` that it was deleted, its local state cleared, or its app deleted (its boxes stay). A transaction's changes are the net over it and its inner transactions: a key that ends as it began is left out.
+
+The node re-evaluates the round's block for each request, so the filters shrink the answer, not the work. Errors:
+
+- a node without the endpoint (time travel off, stock algod, a node before dt6: the router's 404), or whose ledger has no time travel history: `*DTUnsupportedError`;
+- an answer over the capabilities' `StateChanges.MaxResponseBytes` (default 16 MiB): a 400 for `IsStateChangesTooLarge`; narrow it with `App` or fewer `Txids`, or include less;
+- a round whose block is not stored, round 0, a round not reached yet, a txid not in the round: the node's 404, returned as is;
+- every re-evaluation slot busy: a 503 for `IsNodeBusy`; the time limit: a 504 for `IsTimeLimitExceeded`; a re-evaluation that does not reproduce the round: a 500.
+
+### Everything a group changed
+
+With `IncludeAccounts`, `IncludeAssets` or `IncludeApps` (`Full()` for all three), the answer also has `Groups`: one `GroupStateChanges` per top-level group of the round (only those of the transactions `Txid` and `Txids` ask for, when set), in block order (a transaction not in a group is a group of one), with everything else the group changed, each value before and after the group. App state stays per transaction, in `Txns`; the rest is per group, because the node applies a group, inner transactions included, as one.
+
+| Include | Lists |
+|---|---|
+| `IncludeAccounts` | `Accounts`: `AccountStateChange` {`Address`, `Before`, `After`: `*AccountState`} |
+| `IncludeAssets` | `Holdings`: `AssetHoldingChange` {`Address`, `AssetId`, `Before`, `After`: `*AssetHolding`}; `Assets`: `AssetParamsChange` {`AssetId`, `Before`, `After`: `*AssetParams`} |
+| `IncludeApps` | `Apps`: `AppParamsChange` {`AppId`, `Before`, `After`: `*ApplicationParams`, without `GlobalState`}; `LocalStates`: `LocalStateChange` {`Address`, `AppId`, `Before`, `After`: `*ApplicationLocalState`, `Id` and `Schema` without `KeyValue`} |
+
+- A `GroupStateChanges` also has `First` and `Count` (its transactions are at payset indexes `First` to `First+Count-1`, the `Path[0]` of their `Txns` entries), `GroupId` (nil for a lone transaction) and `Txids`, in payset order.
+- Only values that differ are listed, sorted by address, then ID. A nil `Before` means it did not exist before the group (a new account, an opt-in, a created asset or app); a nil `After` that the group removed it (a closed account, an opt-out, a destroyed asset, a deleted app).
+- `Before` is the state right before the group in the round, and `After` right after it.
+- `AccountState` has `Account`'s own fields under the same names: no round, pending rewards or resource lists. `Amount` is as recorded: with the rewards earned until the account was last updated, none pending since, so `After.Amount - Before.Amount` can include rewards no transaction moved. `Status` is `Offline`, `Online` or `Not Participating`.
+- `Apps` lists an app only when something other than its global state changed (programs, schemas, extra pages, version). Global state changes are in `Txns`.
+- The fee sink is in a group's `Accounts` whenever the group paid fees, and `FeeSink` of the answer is the round's. Changes the block makes outside its transactions (the proposer payout, the rewards pool's) are in no group.
+- `Txids` and `Txid` narrow `Groups` to the groups of those transactions; `App` narrows only `Txns`.
+
+Helpers on the models: `res.GroupOf(txid)` (the group holding a top-level transaction), `res.TxnsOf(group)` (the group's `Txns` entries, top-level and inner), and `group.WithoutFeeSink(res.FeeSink)` (a copy without the fee sink in `Accounts`).
+
+### Budget, reads and traces
+
+| Include | Lists |
+|---|---|
+| `IncludeBudget` | `Budget`: `ProgramBudget` {`Path`, `Txid`, `Kind`, `AppId`, `Cost`, `BudgetBefore`, `BudgetAfter`, `Failed`}, each program run, top-level and inner, in the order they began, a group's logic sigs first |
+| `IncludeReads` | `Reads`: `TxnStateReads` {`Path`, `Txid`, `Reads`: `AppStateRead` {`AppId`, `AppStateType`, `Account`, `Key`, `Exists`, `Value`, `Length`}}, each transaction that read app state, each key once, first read first |
+| `IncludeTrace` | `Traces`: `TxnExecTrace` {`Txid`, `ExecTrace`: upstream's `SimulationTransactionExecTrace`}, each top-level transaction of the traced transaction's group, in group order; `Programs`: `ProgramDisassembly` {`Hash`, `Lines`: `DisassemblyLine` {`Pc`, `Text`}}, each program they ran |
+
+- They cover the transactions `Txid` and `Txids` ask for, or all of the round's. `App` narrows only `Txns`.
+- `ProgramBudget`: `Kind` is `approval`, `clear` or `logic-sig`; `AppId` is the app of an app program (the new app for a create); `Cost` is the program's own, without its inner transactions' programs. `BudgetBefore` and `BudgetAfter` are what the program could still spend when it began and ended: the group's pool where budgets are pooled, which an inner app call adds to while its caller runs and takes from for what it spends beyond that, so `BudgetBefore - BudgetAfter` can differ from `Cost` either way. `BudgetAfter` is negative for a clear state program that ran out of budget. `Failed` is set for a clear state program that rejected or failed, and for every program run inside it, whose inner transactions the block drops: so a failed entry can be any `Kind`.
+- `AppStateRead`: `Exists` says whether the key (the box, for a box) existed; `Value` is the global or local value read, when it existed; `Length` is a box's length in bytes. The node leaves out a 0 length, so `Length` is 0 for a missing box, an empty box, and global and local state alike: tell them by `AppStateType` and `Exists`. A key the transaction wrote before reading it shows the value it wrote. Only the read opcodes count (`app_global_get(_ex)`, `app_local_get(_ex)`, `box_get`, `box_extract`, `box_len`).
+- Traces are simulate's, with stack, scratch and state changes, each state change with its `AppId`. A transaction that ran no program has an empty trace. A trace's program hashes are the `Hash` of their program in `Programs`; a line's `Pc` is nil for a line without an opcode, such as `#pragma version` or a label.
+- `IncludeTrace` needs exactly one transaction and a node with `EnableDeveloperAPI`. A trace is large (about 1.3 MB of JSON for a swap with a few inner calls; msgpack, as the client asks for it, is about a quarter of that) and counts toward `MaxResponseBytes`.
+
+Helpers: `res.ProgramLine(hash, pc)` (the line of the program with that hash holding the opcode at `pc`), `res.BudgetOf(txid)` (a top-level transaction's own program runs: its logic sig, then its app program) and `res.BudgetOfPath(path)` (the same for any transaction).
+
+```go
+res, err := client.GetTxnStateChangesForRound(round).Include(algod.IncludeBudget).Trace(txid).Do(ctx)
+for _, t := range res.Traces {
+	if t.Txid != txid {
+		continue
+	}
+	for _, step := range t.ExecTrace.ApprovalProgramTrace {
+		line, _ := res.ProgramLine(t.ExecTrace.ApprovalProgramHash, step.Pc)
+		fmt.Println(step.Pc, line.Text, step.StateChanges)
+	}
+}
+for _, b := range res.BudgetOf(txid) {
+	fmt.Println(b.Kind, b.Cost, b.BudgetAfter)
+}
+```
+
+### Nodes without an include value
+
+The client does not cache capabilities, so it doesn't check `Include` against them before sending. Check `SupportsStateChangesInclude(ctx, values...)` once and keep the answer. A node answers 400 to `trace` without `EnableDeveloperAPI`, which `Do` returns as a `*DTUnsupportedError`. An answer without `FeeSink` when group values were asked for, or without `Traces` when `trace` was, comes from a node that ignored `Include` (behind a load balancer, say): it is a `*DTUnsupportedError` too. Every dt6 node takes the other five values, so with `budget` and `reads` alone an empty list is an empty list.
+
 ## Capabilities and detecting the node
 
 ```go
@@ -164,12 +249,18 @@ default: // past rounds, no queries
 - `Capabilities()` returns what the node serves (`TimeTravel`, `DeveloperApi`) and its limits: `TimeLimitSeconds` for expensive requests, `Simulate` for simulate, and `Query` for `POST /v2/query`, nil when queries are disabled (`GET /v2/capabilities`).
 - `DTFeatures` asks for those capabilities: stock algod has none (404). `Supported` says the node runs dt-algorand, `TimeTravel` that it serves past rounds.
 - `SupportsAssetHolders` checks `TimeTravel`, then sends a holders request the node rejects, for its index when off, else for its limit.
+- `SupportsStateChanges` checks `TimeTravel` and the capabilities' `StateChanges` (the limit of the state changes of a round: `MaxResponseBytes`, and `Include`, the values `Include` takes). `SupportsStateChangesInclude(ctx, values...)` checks `Include` for each value: `trace` is listed only with `EnableDeveloperAPI`.
+- `SupportsStateChangeAppId` checks `DeveloperApi` and the capabilities' `Simulate.ExecTraceConfig`, the fork's exec-trace-config options the node takes: `state-change-app-id`.
 - Both return errors other than "not supported" (network, 401, a holders index still being built), and neither caches: keep the answers.
 - Whether a node sends the effort header shows only on real requests.
 
 ## Simulate
 
 The fork's simulate takes several transaction groups per request: put them in upstream's `SimulateRequest.TxnGroups`. They run in sequence in one block, up to `CapabilitiesResponse.Simulate.MaxTxnGroups`. `Round` reaches back to genesis on a time-travel node.
+
+`Round` after the node's latest round is a 400 from dt6 nodes (`round N is after the latest round L`), as in `Query`. dt5 nodes answered 500, which `RetryTransport` retried until it gave up.
+
+With state change tracing and `StateChangeAppId` (`ExecTraceConfig: models.SimulateTraceConfig{Enable: true, StateChange: true, StateChangeAppId: true}`), each `ApplicationStateOperation` of a trace has `AppId`: the app whose state the opcode changed. It is the running app unless a foreign box opcode (`app_box_*`) changes another app's boxes. The option is opt-in because upstream's `goal` and `libgoal` refuse a response with the extra field. Only dt6 nodes with the developer API take it: stock algod and older nodes answer 400, so check `SupportsStateChangeAppId` first. Without it `AppId` is 0. `StateChangeAppId` and `AppId` are the only fields the fork adds to upstream's generated models (see [Developing](#developing)).
 
 dt-algorand dt5 removed the fork's other simulate options (`rounds`, `parallel-groups`, the validity window modes, `protocol`), which this SDK never sent: use `Query` for calls at several rounds or under a later protocol. A node answers a simulate request that sets one of them with a 400 that names it. dt5 also keeps `allow-unnamed-resources` within the consensus limits. A dt4 node with `SimulateResourceLimitMultiplier` above 1 may report unnamed resources that a group you can submit can't hold, and this SDK no longer reads that factor: a dt4 node's `simulate.max-rounds` and `simulate.resource-limit-multiplier` capabilities are ignored.
 
@@ -185,6 +276,7 @@ dt-algorand dt5 removed the fork's other simulate options (`rounds`, `parallel-g
 | `IsTimeLimitExceeded` | 504: the request ran past the node's time limit; split it |
 | `IsRoundTooLarge` | 400: a versions request over the node's object limits (an account with too many resources; with `Rounds`, an app with too many boxes, or one round of boxes too large) |
 | `IsQueryResponseTooLarge` | 400: query results over the node's limit |
+| `IsStateChangesTooLarge` | 400: state changes of a round over the node's `StateChanges.MaxResponseBytes` |
 | `IsOnlineStakeNotRecorded` | 404: a supply read at a round whose online stake the history lacks |
 | `StatusCode(err)` | the HTTP status of any algod error response |
 | `RetryAfter(err)` | the `Retry-After` header of an error from a fork method |
@@ -223,7 +315,7 @@ A failed request (a status of 400 or more, or a transport error) is decided in t
 | 7 | `Retry-After` above `MaxRetryAfter` (30 s) | give up (`RetryAfterTooLong`) |
 | 8 | otherwise | retry: `RetryRateLimited` (429), `RetryNodeBusy` (busy 503), `RetryServerError`, `RetryNetwork` |
 
-The requests under the node's time limit are `POST /v2/query`, `POST /v2/transactions/simulate`, `GET /v2/deltas/{round}`, and `GET` of a `/versions` or `/holders` listing under `/v2/` (not `GET /versions`, algod's version): a retry would repeat all the work and run into the limit again.
+The requests under the node's time limit are `POST /v2/query`, `POST /v2/transactions/simulate`, `GET /v2/deltas/{round}` and `GET /v2/deltas/{round}/txn/state-changes`, and `GET` of a `/versions` or `/holders` listing under `/v2/` (not `GET /versions`, algod's version): a retry would repeat all the work and run into the limit again.
 
 A transaction submit (`POST /v2/transactions` and `/v2/transactions/async`) is retried only when the node surely did not take it: a 429, a busy 503, or a connection refused or never made (a dial error: refused, DNS, unreachable network or host, dial timeout). After a lost answer (a reset connection, an EOF, a 502), a retry would get "transaction already in ledger" instead of the transaction ID: check for the transaction instead.
 
@@ -284,7 +376,7 @@ if effort, ok := algod.ParseEffort(info.Header); ok {
 }
 ```
 
-- A node with `EnableEffortHeader` sends `X-Algod-Effort` (`algod.EffortHeader`) with the work a request did. It sends it on simulate, query, versions, deltas and reads with a round (`round=<latest>` included), but not on the asset holders listing, on reads without a round, or on answers given before any work (503s, most 400s). `ResponseBytes` is 0 for reads at a round. It is meant for a proxy to read and strip.
+- A node with `EnableEffortHeader` sends `X-Algod-Effort` (`algod.EffortHeader`) with the work a request did. It sends it on simulate, query, versions, deltas, state changes and reads with a round (`round=<latest>` included), but not on the asset holders listing, on reads without a round, or on answers given before any work (503s, most 400s). `ResponseBytes` is 0 for reads at a round. It is meant for a proxy to read and strip.
 - A time-travel node marks answers given as of a requested round with `X-Algod-TT-Round` (`algod.TTRoundHeader`), which `algod.ParseTTRound` reads. Reads at a round check it themselves.
 - After a request that got no response, `ResponseInfo` is empty. `Pages` and `All` leave the last page's.
 - Don't share one `ResponseInfo` between concurrent requests.
@@ -300,6 +392,8 @@ What the fork's methods do against stock algod, and against dt-algorand with a f
 | Versions | `DTUnsupportedError` (404, or its router's 400 for `AssetVersions`, `AccountAssetVersions` and `AccountApplicationVersions`) | `DTUnsupportedError` (the same answers without `EnableTimeTravel`) |
 | `GetAssetHolders` | `DTUnsupportedError` (its router's 400) | `DTUnsupportedError` (time travel or index off); 503 while the index is built |
 | `Query` | `DTUnsupportedError` (404) | `DTUnsupportedError` (queries disabled) |
+| `GetTxnStateChangesForRound` | `DTUnsupportedError` (404) | `DTUnsupportedError` (time travel off: 404); `trace` without the developer API: `DTUnsupportedError` |
+| `StateChangeAppId` in simulate | 400 | 400: without the developer API, which every execution trace needs, or before dt6 |
 | `Capabilities` | `DTUnsupportedError` (404) | always served |
 | `DTFeatures` | zero value | `Supported`, with `TimeTravel` false without `EnableTimeTravel` |
 | Multi-group simulate | 400 "expected 1 transaction group" | — |
@@ -319,7 +413,7 @@ Some upstream endpoints answer differently on a dt-algorand node, whatever the S
 
 Versions are `v<go-algorand-sdk version>-dt.<dt-algorand release>.<x.y.z>`, as for dt-algosdk (`3.9.0-dt.4.1.0.0`). For example, `v2.14.0-dt.5.1.0.0`, the first release, is built on go-algorand-sdk v2.14.0, covers the API of dt-algorand dt5 (`v5.0.5-dt5`), and is this SDK's release 1.0.0. `x.y.z` is this SDK's own version: bump `x` for breaking changes, `y` for features and `z` for fixes. It never resets when the go-algorand-sdk version or the dt-algorand release changes: after `v2.14.0-dt.5.1.0.0`, a fix is `v2.14.0-dt.5.1.0.1`, and moving to dt6 with new features is `v2.14.0-dt.6.1.1.0`. dt-algosdk counts its own `x.y.z`, so the two can differ for the same dt-algorand release.
 
-The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets.
+The types in `types` and `protocol` are exported from dt-algorand with go-algorand's `scripts/export_sdk_types.py`, so they match the node's. They can lack fields that upstream added for protocols dt-algorand doesn't have yet: v2.14.0-dt drops four consensus parameters only upstream's vFuture sets. dt6 (on go-algorand 5.1.1) renamed the post-quantum types (`PQSig` to `SaltedKeySig`, `PQScheme` to `SigScheme`, `PQAddressSalt` to `AddressSalt`, `SignedTxn.PQsig` to `SKsig`) with the same wire format: the fork keeps upstream's names, so that code written for go-algorand-sdk compiles, and takes only dt6's new consensus parameters. After the export, restore `types/signature.go` and `types/transaction.go` (`git checkout`); `make x-repo-types` then reports those names until upstream renames them.
 
 ### Releasing
 
@@ -339,8 +433,8 @@ Never move or delete a pushed tag: the module proxy and checksum database keep t
 
 ## Developing
 
-- **Fork code** goes in `dt_*.go` files. Besides the types exported from dt-algorand, the only upstream code the fork edits is a hook in `client/v2/common/common.go` `submitFormRaw`, for `ResponseInfo`. `./scripts/dt-guard.sh` checks this, and that every upstream workflow only runs in upstream's repository. The fork's CI is `.github/workflows/dtsdk.yml`.
-- **Unit tests:** `go test ./client/...`. The fork's are in `client/v2/algod/dt_test.go`, `client/v2/common/dt_response_test.go` and `client/v2/common/dt_retry_test.go`, against stub servers.
+- **Fork code** goes in `dt_*.go` files. Besides the types exported from dt-algorand, the only upstream code the fork edits is a hook in `client/v2/common/common.go` `submitFormRaw`, for `ResponseInfo`, and two fields of the generated models that dt-algorand's simulate traces add: `SimulateTraceConfig.StateChangeAppId` and `ApplicationStateOperation.AppId`. Keep them when regenerating the models. `./scripts/dt-guard.sh` checks this, and that every upstream workflow only runs in upstream's repository. The fork's CI is `.github/workflows/dtsdk.yml`.
+- **Unit tests:** `go test ./client/...`. The fork's are in `client/v2/algod/dt_test.go`, `client/v2/algod/dt_state_changes_test.go` (with a msgpack answer encoded by dt-algorand's own types and codec), `client/v2/common/dt_response_test.go` and `client/v2/common/dt_retry_test.go`, against stub servers.
 - **Cucumber unit tests:** fetch algorand-sdk-testing's features at the commit CI pins (`SDK_TESTING_COMMIT` in dtsdk.yml), then run `make unit`. Later commits can add scenarios the SDK doesn't implement yet. `test-harness.sh` ignores an `INSTALL_ONLY` set in the environment and starts a Docker sandbox:
 
   ```sh

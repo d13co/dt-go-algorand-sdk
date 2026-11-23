@@ -218,8 +218,9 @@ func (p *RetryPolicy) resolved() RetryPolicy {
 }
 
 // reTimeLimited matches the time-limited GETs, after any prefix: a listing
-// under /v2/ (not algod's own GET /versions) and /v2/deltas/{round}.
-var reTimeLimited = regexp.MustCompile(`/v2/.+/(versions|holders)$|/v2/deltas/\d+$`)
+// under /v2/ (not algod's own GET /versions), /v2/deltas/{round} and
+// /v2/deltas/{round}/txn/state-changes.
+var reTimeLimited = regexp.MustCompile(`/v2/.+/(versions|holders)$|/v2/deltas/\d+(/txn/state-changes)?$`)
 
 func trimPath(path string) string {
 	if i := strings.IndexAny(path, "?#"); i >= 0 {
@@ -230,7 +231,8 @@ func trimPath(path string) string {
 
 // IsTimeLimitedRequest reports whether a request runs under the node's time
 // limit, so a 504 means it ran too long and a retry would do the same: POST
-// /v2/query, POST /v2/transactions/simulate, GET /v2/deltas/{round}, and GET
+// /v2/query, POST /v2/transactions/simulate, GET /v2/deltas/{round} and
+// /v2/deltas/{round}/txn/state-changes, and GET
 // of a /versions or /holders listing (not GET /versions, algod's version).
 // Split or narrow it instead. The path
 // may have a prefix, such as a proxy's.

@@ -137,6 +137,7 @@ func TestRetryDecision(t *testing.T) {
 			{"POST", "/v2/query"},
 			{"POST", "/v2/transactions/simulate"},
 			{"GET", "/v2/deltas/123"},
+			{"GET", "/v2/deltas/123/txn/state-changes"},
 			{"GET", "/v2/applications/1/boxes/versions"},
 			{"GET", "/v2/assets/31566704/holders"},
 			{"POST", "/algod/v2/query"},
@@ -154,6 +155,7 @@ func TestRetryDecision(t *testing.T) {
 		assert.True(t, IsTimeLimitedRequest("GET", "/algod/v2/accounts/X/versions"))
 		assert.False(t, IsTimeLimitedRequest("GET", "/v2/query"))
 		assert.False(t, IsTimeLimitedRequest("GET", "/v2/deltas/txn/group/abc"))
+		assert.False(t, IsTimeLimitedRequest("GET", "/v2/deltas/123/txn/group"))
 	})
 
 	t.Run("does not retry other statuses, 413 included", func(t *testing.T) {

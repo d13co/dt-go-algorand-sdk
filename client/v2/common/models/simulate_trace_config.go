@@ -17,4 +17,11 @@ type SimulateTraceConfig struct {
 	// StateChange a boolean option enabling returning application state changes
 	// (global, local, and box changes) with the execution trace during simulation.
 	StateChange bool `json:"state-change,omitempty"`
+
+	// StateChangeAppId a boolean option adding AppId to each application state
+	// change of the execution trace. Needs StateChange. dt-go-algorand-sdk: not in
+	// upstream's spec, keep it when regenerating. Stock algod and dt-algorand
+	// nodes before dt6 refuse it with 400: check
+	// algod.Client.SupportsStateChangeAppId first.
+	StateChangeAppId bool `json:"state-change-app-id,omitempty"`
 }

@@ -144,6 +144,11 @@ type CapabilitiesResponse struct {
 	// Simulate holds the limits of simulate requests.
 	Simulate SimulateLimits `json:"simulate"`
 
+	// StateChanges holds the limit of GET /v2/deltas/{round}/txn/state-changes;
+	// nil when the node doesn't serve it (time travel off, or a node from
+	// before dt6).
+	StateChanges *StateChangesLimits `json:"state-changes,omitempty"`
+
 	// TimeLimitSeconds is how long an expensive request (simulate, query,
 	// deltas, versions) may run before it fails with 504; 0 for no limit.
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
@@ -155,6 +160,12 @@ type CapabilitiesResponse struct {
 
 // SimulateLimits is a node's limits on simulate requests.
 type SimulateLimits struct {
+	// ExecTraceConfig lists the fork's exec-trace-config options the node
+	// takes beyond upstream's: "state-change-app-id"
+	// (SimulateTraceConfig.StateChangeAppId). Listed only with DeveloperApi;
+	// empty from a node that takes none of them.
+	ExecTraceConfig []string `json:"exec-trace-config,omitempty"`
+
 	// MaxExtraOpcodeBudget is the most extra-opcode-budget a simulate request
 	// may ask for, per group.
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
